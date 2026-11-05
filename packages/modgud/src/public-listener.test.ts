@@ -302,6 +302,33 @@ describe('logging', () => {
   });
 });
 
+describe('a Child that closes its stdin', () => {
+  test('a Caller message it can no longer receive is logged, not left as an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      const { lines, url } = start();
+      const { client } = await connect(url);
+      await client.callTool({ arguments: {}, name: 'close-stdin' });
+      await Bun.sleep(100);
+
+      // The Child never receives this call, so its answer is not awaited. A
+      // message this large is written asynchronously, so its failure arrives
+      // as a rejected promise rather than a thrown error.
+      void client
+        .callTool({ arguments: { text: 'x'.repeat(200_000) }, name: 'echo' })
+        .catch(() => undefined);
+      await waitFor(() => lines.some((line) => line.includes('could not write to the Child')));
+      await Bun.sleep(100);
+
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
+});
+
 describe('ending a Session', () => {
   test('DELETE ends the Session, and later requests on it get 404', async () => {
     const { listener, url } = start();

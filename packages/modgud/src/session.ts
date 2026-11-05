@@ -198,7 +198,7 @@ export class Session {
       }
     }
     try {
-      this.#child.send(message);
+      await this.#child.send(message);
     } catch (error) {
       this.#log.warn(`${this.#label} could not write to the Child: ${loggable(String(error))}`);
     }

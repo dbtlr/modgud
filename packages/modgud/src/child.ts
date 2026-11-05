@@ -97,14 +97,15 @@ export class Child {
     }
   }
 
-  // Writes one message to the process's stdin. Throws when it is not running.
-  send(message: JSONRPCMessage) {
+  // Writes one message to the process's stdin. Rejects when it is not
+  // running or the write fails.
+  async send(message: JSONRPCMessage) {
     const stdin = this.#process?.stdin;
     if (stdin === undefined) {
       throw new Error('The Child is not running.');
     }
-    void stdin.write(serializeMessage(message));
-    void stdin.flush();
+    await stdin.write(serializeMessage(message));
+    await stdin.flush();
   }
 
   // Stops the process: SIGTERM, then SIGKILL if it has not exited in time.

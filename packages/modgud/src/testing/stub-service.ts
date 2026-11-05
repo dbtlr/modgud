@@ -4,6 +4,7 @@
 // answers, not even `initialize`. With `STUB_MODE=ignore-sigterm` it serves
 // as usual but ignores SIGTERM, so only SIGKILL stops it.
 import { once } from 'node:events';
+import { closeSync } from 'node:fs';
 
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -106,6 +107,19 @@ server.registerTool(
     const id = 'forged\n2026-01-01T00:00:00.000Z warn forged line';
     process.stdout.write(`${JSON.stringify({ id, jsonrpc: '2.0', result: {} })}\n`);
     return text('sent');
+  },
+);
+
+server.registerTool(
+  'close-stdin',
+  { description: 'Answer, then close stdin and keep running, so writes to it fail.' },
+  () => {
+    setTimeout(() => {
+      closeSync(0);
+      // Keep the process alive with its stdin closed.
+      setInterval(() => undefined, 1000);
+    }, 20);
+    return text('closing');
   },
 );
 
