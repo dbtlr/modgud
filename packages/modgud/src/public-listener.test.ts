@@ -165,6 +165,7 @@ describe('a Caller with the harness token', () => {
     const { tools } = await client.listTools();
     const echo = tools.find((tool) => tool.name === 'echo');
     expect(tools.map((tool) => tool.name).toSorted()).toEqual([
+      'close-stdin',
       'echo',
       'environment',
       'exit',
@@ -316,9 +317,14 @@ describe('a Child that closes its stdin', () => {
       // The Child never receives this call, so its answer is not awaited. A
       // message this large is written asynchronously, so its failure arrives
       // as a rejected promise rather than a thrown error.
-      void client
-        .callTool({ arguments: { text: 'x'.repeat(200_000) }, name: 'echo' })
-        .catch(() => undefined);
+      const lost = async () => {
+        try {
+          await client.callTool({ arguments: { text: 'x'.repeat(200_000) }, name: 'echo' });
+        } catch {
+          // The call times out or fails; only Modgud's handling matters here.
+        }
+      };
+      void lost();
       await waitFor(() => lines.some((line) => line.includes('could not write to the Child')));
       await Bun.sleep(100);
 

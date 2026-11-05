@@ -4,7 +4,7 @@
 // answers, not even `initialize`. With `STUB_MODE=ignore-sigterm` it serves
 // as usual but ignores SIGTERM, so only SIGKILL stops it.
 import { once } from 'node:events';
-import { closeSync } from 'node:fs';
+import { close } from 'node:fs';
 
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -115,7 +115,7 @@ server.registerTool(
   { description: 'Answer, then close stdin and keep running, so writes to it fail.' },
   () => {
     setTimeout(() => {
-      closeSync(0);
+      close(0, () => undefined);
       // Keep the process alive with its stdin closed.
       setInterval(() => undefined, 1000);
     }, 20);
