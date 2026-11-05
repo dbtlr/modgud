@@ -10,7 +10,7 @@ It follows the [MCP authorization specification](https://modelcontextprotocol.io
 
 ## Addresses
 
-Two configured base URLs name every URL below. Each is an `https` URL with a lowercase host, no explicit default port, no path, no trailing slash, no query, and no fragment, and Modgud uses each as the exact string configured. It never rebuilds them from a request's `Host` header.
+Two configured base URLs name every URL below. Each is an `https` URL with a lowercase ASCII host (punycode for an international name), no explicit default port, no path, no trailing slash, no query, and no fragment, and Modgud uses each as the exact string configured. It never rebuilds them from a request's `Host` header.
 
 - `public.base_url` is the address callers use through the tunnel. It is the `issuer`, the one entry of `authorization_servers`, and the `iss` of every authorization response, all as the same string. A Service's resource URI is `<public.base_url>/<service>/mcp`.
 - `admin.base_url` is the HTTPS address of the Admin listener on the tailnet, served by a TLS-terminating proxy that passes the `Host` header through ([ADR-0003](decisions/0003-two-listeners-anything-a-person-clicks-lives-on-the-tailnet.md)). The `authorization_endpoint` is `<admin.base_url>/authorize`.
@@ -70,7 +70,7 @@ A Session is bound to the credential source that opened it: the static token, or
 
 `POST /oauth/register` takes an RFC 7591 JSON body of at most 16 KiB.
 
-- `redirect_uris` is required: 1 to 10 URIs, each at most 2,048 characters. Each is an absolute `https` URI, or an `http` URI whose host is `127.0.0.1`, `[::1]`, or `localhost`. None has a fragment or userinfo.
+- `redirect_uris` is required: 1 to 10 URIs, each at most 2,048 characters. Each is an absolute `https` URI whose host is a domain name, or an `http` URI whose host is `127.0.0.1`, `[::1]`, or `localhost`. None has a fragment or userinfo.
 - `client_name` is optional, at most 100 characters.
 - `grant_types`, when present, must include `authorization_code`; `response_types`, when present, must include `code`.
 - Any requested `token_endpoint_auth_method` is accepted and registered as `none`, and the response says so. A requested `scope` is ignored.
@@ -179,7 +179,7 @@ Every single-use step is atomic: spending a Pairing code, spending an authorizat
 
 ## Store
 
-Modgud keeps registrations, unspent Pairing codes, authorizations, authorization codes, and tokens in one SQLite database at `store.path`. Every Pairing code, authorization code, and token is stored only as its SHA-256 hash. Expired rows are deleted at least hourly. The server reads the store on every request, so a change that `modgud pair` or `modgud revoke` writes takes effect on the next request, without a restart. Everything in the store survives a restart; pending requests, which live in memory, do not.
+Modgud keeps registrations, unspent Pairing codes, authorizations, authorization codes, and tokens in one SQLite database at `store.path`. Every Pairing code, authorization code, and token is stored only as its SHA-256 hash; a refresh token's family is stored as is. Expired rows are deleted at least hourly. The server reads the store on every request, so a change that `modgud pair` or `modgud revoke` writes takes effect on the next request, without a restart. Everything in the store survives a restart; pending requests, which live in memory, do not.
 
 Whenever Modgud or a command opens the store, it checks the store's directory and file before reading. It creates an absent directory with mode 0700. It refuses to start when an existing directory is writable by group or others, or owned by another account. It sets the file, and SQLite's `-wal`, `-shm`, and `-journal` files beside it, to mode 0600, logging a warning when an existing mode was wider, and refuses to start when it cannot.
 
@@ -202,9 +202,9 @@ Both commands read the same configuration file as `modgud serve` and act on its 
 - An attacker with many source addresses can keep the overall registration limit full, which blocks dynamic registration. Clients that use a metadata document, as claude.ai and ChatGPT do when Modgud advertises it, are unaffected.
 - Any device on the tailnet can reach the Admin listener directly and trip the failed-code throttle, which pauses pairing for 10 minutes at a time.
 - A page the approver opens can open a window and navigate it to `/authorize` repeatedly, which passes as top-level navigation. That can fill the pending requests and spend the metadata fetch budget while the page stays open.
-- A client whose refresh response is lost, or that sends two refreshes at once, revokes its own authorization on the retry, and the person pairs again.
+- A client that presents a refresh token it or another of its processes already used, as after a lost refresh response or two refreshes at once, revokes its own authorization, and the person pairs again.
 
 ## Open items for the end-to-end proof
 
 - Whether claude.ai and ChatGPT send `resource`. Modgud defaults it when absent.
-- How often a client retries or races a refresh, which revokes its authorization under strict rotation.
+- How often a client retries or races a refresh, which revokes its authorization under strict rotation. One case to watch: two Claude Code sessions sharing one stored credential across an access-token expiry.
