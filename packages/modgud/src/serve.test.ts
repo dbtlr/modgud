@@ -46,6 +46,7 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
     `
       [harness]
       bearer_token_sha256 = "${sha256Hex('serve-token')}"
+      service = "stub"
 
       [public]
       port = 0

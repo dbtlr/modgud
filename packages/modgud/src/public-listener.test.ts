@@ -18,32 +18,48 @@ afterEach(async () => {
   await Promise.all(running.splice(0).map(async (instance) => instance.stop()));
 });
 
-// Serves the stub Service as `stub` on a free localhost port.
+// Serves the stub Service as `stub`, the harness's Service, and again as
+// `other`, on a free localhost port.
 const start = ({
   identityEnv = undefined as string | undefined,
   idleMinutes = 30,
+  initializeTimeoutMs = undefined as number | undefined,
+  marker = '',
   maxSessions = 16,
   origins = [] as string[],
   parentEnvironment = process.env,
+  stubMode = '',
 } = {}): Running => {
+  const stub = `
+    command = ${JSON.stringify(process.execPath)}
+    args = ${JSON.stringify([STUB, ...(marker === '' ? [] : [marker])])}
+    env = { STUB_SETTING = "configured", STUB_MODE = ${JSON.stringify(stubMode)} }
+    idle_timeout_minutes = ${String(idleMinutes)}
+  `;
   const config = parseConfig(`
     [harness]
     bearer_token_sha256 = "${sha256Hex(TOKEN)}"
+    service = "stub"
 
     [public]
     allowed_origins = ${JSON.stringify(origins)}
     max_sessions = ${String(maxSessions)}
 
     [services.stub]
-    command = ${JSON.stringify(process.execPath)}
-    args = [${JSON.stringify(STUB)}]
-    env = { STUB_SETTING = "configured" }
-    idle_timeout_minutes = ${String(idleMinutes)}
+    ${stub}
     ${identityEnv === undefined ? '' : `identity_env = "${identityEnv}"`}
+
+    [services.other]
+    ${stub}
   `);
   const lines: string[] = [];
   const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
-  const listener = createPublicListener({ config, log, parentEnvironment });
+  const listener = createPublicListener({
+    config,
+    log,
+    parentEnvironment,
+    ...(initializeTimeoutMs === undefined ? {} : { initializeTimeoutMs }),
+  });
   const server = Bun.serve({
     fetch: listener.fetch,
     hostname: '127.0.0.1',
@@ -61,6 +77,13 @@ const start = ({
   };
   running.push(instance);
   return instance;
+};
+
+// Command lines of the running processes that contain the marker.
+const processesWith = async (marker: string) => {
+  const ps = Bun.spawn(['ps', '-A', '-ww', '-o', 'args='], { stdout: 'pipe' });
+  const output = await new Response(ps.stdout).text();
+  return output.split('\n').filter((line) => line.includes(marker));
 };
 
 const connect = async (
@@ -111,9 +134,10 @@ const post = (url: URL, headers: Record<string, string>, body = initializeBody) 
     method: 'POST',
   });
 
-const waitFor = async (condition: () => boolean, timeoutMs = 3000) => {
+const waitFor = async (condition: () => boolean | Promise<boolean>, timeoutMs = 3000) => {
   const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
+  // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
+  while (!(await condition())) {
     if (Date.now() > deadline) {
       throw new Error('Timed out waiting for the condition.');
     }
@@ -133,9 +157,12 @@ describe('a Caller with the harness token', () => {
       'echo',
       'environment',
       'exit',
+      'oversized',
       'pid',
       'progress',
       'roots',
+      'slow',
+      'unmatched-response',
     ]);
     expect(echo?.annotations).toEqual({ readOnlyHint: true });
     expect(echo?.inputSchema).toMatchObject({
@@ -217,6 +244,7 @@ describe('a Caller with the harness token', () => {
             'LC_ALL',
             'LOGNAME',
             'PATH',
+            'STUB_MODE',
             'STUB_SETTING',
             'TMPDIR',
             'TZ',
@@ -246,6 +274,18 @@ describe('a Caller with the harness token', () => {
     expect(lines).toContainEqual(
       `stub session ${transport.sessionId?.slice(0, 8) ?? ''} stderr: stub-service started`,
     );
+  });
+});
+
+describe('logging', () => {
+  test('a Child response id with a newline stays on one log line', async () => {
+    const { lines, url } = start();
+    const { client } = await connect(url);
+
+    await client.callTool({ arguments: {}, name: 'unmatched-response' });
+
+    await waitFor(() => lines.some((line) => line.includes('forged')));
+    expect(lines.filter((line) => line.includes('\n'))).toEqual([]);
   });
 });
 
@@ -288,6 +328,92 @@ describe('ending a Session', () => {
     await waitFor(() => listener.sessionCount() === 0);
     expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
   });
+
+  test('a cancelled call the Child never answers does not keep its Session past the idle timeout', async () => {
+    const { lines, listener, url } = start({ idleMinutes: 0.005 });
+    const { client } = await connect(url);
+
+    let cancelled = false;
+    try {
+      await client.callTool({ arguments: {}, name: 'slow' }, { timeout: 100 });
+    } catch {
+      cancelled = true;
+    }
+
+    expect(cancelled).toBe(true);
+    await waitFor(() => listener.sessionCount() === 0);
+    expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
+  });
+
+  test('a Child that never answers initialize is ended within the bound', async () => {
+    const marker = `marker-${crypto.randomUUID()}`;
+    const { lines, listener, url } = start({ initializeTimeoutMs: 200, marker, stubMode: 'mute' });
+
+    const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
+    await response.body?.cancel();
+
+    await waitFor(() => listener.sessionCount() === 0);
+    expect(lines.some((line) => line.endsWith('ended: initialize timed out.'))).toBe(true);
+    await waitFor(async () => (await processesWith(marker)).length === 0);
+  });
+
+  test('a Child message over the size limit ends its Session instead of wedging it', async () => {
+    const { lines, listener, url } = start();
+    const { client } = await connect(url);
+
+    // The SDK client waits out its own timeout once the Session is gone.
+    const call = (async () => {
+      try {
+        await client.callTool({ arguments: {}, name: 'oversized' }, { timeout: 1000 });
+      } catch {
+        // Expected: the Session ended under the call.
+      }
+    })();
+
+    await waitFor(() => listener.sessionCount() === 0);
+    await call;
+    expect(lines.some((line) => line.endsWith('ended: child protocol error.'))).toBe(true);
+  });
+
+  test('an initialize after close gets 503 and starts no Child', async () => {
+    const marker = `marker-${crypto.randomUUID()}`;
+    const { listener, url } = start({ marker });
+    await listener.close();
+
+    const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
+
+    expect(response.status).toBe(503);
+    expect(listener.sessionCount()).toBe(0);
+    expect(await processesWith(marker)).toEqual([]);
+  });
+
+  test('a Session still opening when close runs is ended, and its Child stopped', async () => {
+    const marker = `marker-${crypto.randomUUID()}`;
+    const race: { closed?: Promise<void> | undefined; listener?: PublicListener } = {};
+    // The listener reads the parent environment while it opens a Session, so
+    // reading PATH starts close() in exactly that window.
+    const parentEnvironment = {
+      ...process.env,
+      get PATH() {
+        queueMicrotask(() => {
+          race.closed = race.listener?.close();
+        });
+        return process.env.PATH;
+      },
+    };
+    const instance = start({ marker, parentEnvironment });
+    race.listener = instance.listener;
+    const { lines, url } = instance;
+
+    const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
+    await race.closed;
+
+    expect(race.closed).toBeDefined();
+    expect(response.status).toBe(503);
+    expect(instance.listener.sessionCount()).toBe(0);
+    expect(lines.some((line) => line.endsWith('ended: shutdown.'))).toBe(true);
+    expect(await processesWith(marker)).toEqual([]);
+  });
 });
 
 describe('refusals', () => {
@@ -328,9 +454,20 @@ describe('refusals', () => {
   test('an unknown Service path gets 404', async () => {
     const { url } = start();
 
-    const response = await post(new URL('/other/mcp', url), { Authorization: `Bearer ${TOKEN}` });
+    const response = await post(new URL('/missing/mcp', url), {
+      Authorization: `Bearer ${TOKEN}`,
+    });
 
     expect(response.status).toBe(404);
+  });
+
+  test("the harness token gets 401 at another Service's path", async () => {
+    const { listener, url } = start();
+
+    const response = await post(new URL('/other/mcp', url), { Authorization: `Bearer ${TOKEN}` });
+
+    expect(response.status).toBe(401);
+    expect(listener.sessionCount()).toBe(0);
   });
 
   test('a foreign Origin gets 403, and an allowed one passes', async () => {

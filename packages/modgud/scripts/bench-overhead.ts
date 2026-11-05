@@ -6,7 +6,8 @@
 //     -- norn mcp -C /path/to/fixture-vault
 //
 // Everything after `--` is the Service's command and arguments. The Service
-// runs with the same environment both ways.
+// gets a Child's environment both ways, except that the direct leg's SDK
+// stdio transport also adds SHELL and TERM from this process's environment.
 import { parseArgs } from 'node:util';
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -92,6 +93,7 @@ const proxied = await (async () => {
   const config = parseConfig(`
     [harness]
     bearer_token_sha256 = "${sha256Hex(token)}"
+    service = "bench"
 
     [services.bench]
     command = ${JSON.stringify(command)}

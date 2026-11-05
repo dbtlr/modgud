@@ -1,5 +1,7 @@
 // A stdio MCP server that integration tests start as a Service. Each tool
-// exercises one thing the proxy must pass through unchanged.
+// exercises one thing the proxy must pass through unchanged, or one way a
+// Service can misbehave. With `STUB_MODE=mute` it reads its input and never
+// answers, not even `initialize`.
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
@@ -50,5 +52,30 @@ server.registerTool('exit', { description: 'Exit the process right after answeri
   return text('bye');
 });
 
+server.registerTool('slow', { description: 'Answer only after a minute.' }, async () => {
+  await Bun.sleep(60_000);
+  return text('late');
+});
+
+// More than the 10 MiB a Child's single message may take.
+server.registerTool('oversized', { description: 'Return an 11 MiB result.' }, () =>
+  text('x'.repeat(11 * 1024 * 1024)),
+);
+
+server.registerTool(
+  'unmatched-response',
+  { description: 'Write a response to a request no Caller sent, then answer.' },
+  () => {
+    // An id with a newline, which must not start a second log line.
+    const id = 'forged\n2026-01-01T00:00:00.000Z warn forged line';
+    process.stdout.write(`${JSON.stringify({ id, jsonrpc: '2.0', result: {} })}\n`);
+    return text('sent');
+  },
+);
+
 process.stderr.write('stub-service started\n');
-await server.connect(new StdioServerTransport());
+if (process.env.STUB_MODE === 'mute') {
+  process.stdin.resume();
+} else {
+  await server.connect(new StdioServerTransport());
+}

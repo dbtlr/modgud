@@ -15,9 +15,12 @@ Status: in build. `modgud serve` serves stdio MCP servers over Streamable HTTP b
 # The SHA-256 hash of the bearer token, in lowercase hex. Callers send the token
 # itself as `Authorization: Bearer <token>`.
 bearer_token_sha256 = "…"
+# The one configured Service the token opens. At any other Service's path it
+# gets HTTP 401.
+service = "norn"
 
 [public]
-host = "127.0.0.1"    # default
+host = "127.0.0.1"    # default; loopback only: 127.0.0.1, ::1, or localhost
 port = 8470           # default
 max_sessions = 16     # default; an initialize past it gets HTTP 503
 allowed_origins = []  # default; a request with any other Origin header gets HTTP 403
@@ -27,7 +30,7 @@ command = "norn"
 args = ["mcp", "-C", "/path/to/vault"]
 cwd = "/path/to/vault"        # optional
 env = { NORN_ROOT = "/path/to/vault" }  # optional
-idle_timeout_minutes = 30     # default
+idle_timeout_minutes = 30     # default; at most 10080 (one week)
 # identity_env = "MIMIR_USER" # optional; reserved for the Grant's Identity
 ```
 
@@ -38,7 +41,7 @@ token=$(openssl rand -hex 32)
 printf '%s' "$token" | sha256sum
 ```
 
-Each Session gets its own Child process. The Child's environment holds only `HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `TMPDIR`, `TZ`, and `USER` from Modgud's own environment, plus the Service's `env`. A Session ends when the Caller deletes it, when it is idle for the Service's timeout, or when its Child exits.
+Each Session gets its own Child process. The Child's environment holds only `HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `TMPDIR`, `TZ`, and `USER` from Modgud's own environment, plus the Service's `env`. A Session ends when the Caller deletes it, when it has no traffic in either direction for the Service's idle timeout, when its Child exits or writes output Modgud cannot read, or when its Child does not answer `initialize` within 30 seconds. A request still in flight does not keep a Session open.
 
 To measure what Modgud adds to a tool call, compared with calling the Service directly over stdio:
 

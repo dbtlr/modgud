@@ -14,7 +14,18 @@ import type { ServiceConfig } from './config.ts';
 import { loggable } from './log.ts';
 import type { Log } from './log.ts';
 
-export type SessionEndReason = 'child exited' | 'deleted' | 'idle' | 'not initialized' | 'shutdown';
+export type SessionEndReason =
+  | 'child exited'
+  | 'child protocol error'
+  | 'deleted'
+  | 'idle'
+  | 'initialize timed out'
+  | 'not initialized'
+  | 'shutdown';
+
+// How long a Child has to answer the Caller's initialize request before its
+// Session ends.
+export const INITIALIZE_TIMEOUT_MS = 30_000;
 
 // A request id or progress token, as a map key: JSON-RPC lets either be a
 // string or a number, and the two must not collide.
@@ -38,7 +49,9 @@ const progressTokenOf = (message: JSONRPCMessage): string | number | undefined =
 export type SessionOptions = {
   command: Pick<ServiceConfig, 'args' | 'command' | 'cwd' | 'idle_timeout_minutes'>;
   environment: Record<string, string>;
+  // The id of the Grant that opened the Session.
   grant: string;
+  initializeTimeoutMs: number;
   log: Log;
   onEnd: (session: Session, reason: SessionEndReason) => void;
   service: string;
@@ -62,13 +75,16 @@ export class Session {
   readonly #child: Child;
   readonly #http: WebStandardStreamableHTTPServerTransport;
   readonly #idleMs: number;
+  readonly #initializeTimeoutMs: number;
   readonly #log: Log;
   readonly #onEnd: (session: Session, reason: SessionEndReason) => void;
-  // Caller requests the Child has not answered, by key, and the progress
-  // tokens they carry.
+  // Caller requests the Child has not answered and the Caller has not
+  // cancelled, by key, and the progress tokens they carry.
   readonly #inFlight = new Map<string, RequestId>();
   readonly #progress = new Map<string, RequestId>();
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
+  // The Caller's initialize request, while the Child has not answered it.
+  #initialize: { id: RequestId; timer: ReturnType<typeof setTimeout> } | undefined;
   #ended = false;
 
   private constructor(options: SessionOptions) {
@@ -77,12 +93,19 @@ export class Session {
     this.#log = options.log;
     this.#onEnd = options.onEnd;
     this.#idleMs = options.command.idle_timeout_minutes * 60_000;
+    this.#initializeTimeoutMs = options.initializeTimeoutMs;
     this.#child = new Child({
       args: options.command.args,
       command: options.command.command,
       cwd: options.command.cwd,
       environment: options.environment,
       onExit: () => void this.end('child exited'),
+      onFatal: (error) => {
+        this.#log.warn(
+          `${this.#label} unreadable output from the Child: ${loggable(error.message)}`,
+        );
+        void this.end('child protocol error');
+      },
       onMessage: (message) => void this.#fromChild(message),
       onStderr: (line) => {
         if (line.trim() !== '') {
@@ -150,11 +173,24 @@ export class Session {
       if (token !== undefined) {
         this.#progress.set(key(token), message.id);
       }
+      if (message.method === 'initialize' && this.#initialize === undefined) {
+        this.#initialize = {
+          id: message.id,
+          timer: setTimeout(() => void this.end('initialize timed out'), this.#initializeTimeoutMs),
+        };
+      }
+    } else if (isJSONRPCNotification(message) && message.method === 'notifications/cancelled') {
+      // The Child sends no response to a cancelled request, so later messages
+      // must not be tied to it.
+      const requestId = isRecord(message.params) ? message.params.requestId : undefined;
+      if (typeof requestId === 'string' || typeof requestId === 'number') {
+        this.#settle(requestId);
+      }
     }
     try {
       this.#child.send(message);
     } catch (error) {
-      this.#log.warn(`${this.#label} could not write to the Child: ${String(error)}`);
+      this.#log.warn(`${this.#label} could not write to the Child: ${loggable(String(error))}`);
     }
   }
 
@@ -178,7 +214,7 @@ export class Session {
     } catch (error) {
       // The Caller's stream for this message is gone, for example after it
       // disconnected; the message has nowhere to go.
-      this.#log.warn(`${this.#label} dropped a message from the Child: ${String(error)}`);
+      this.#log.warn(`${this.#label} dropped a message from the Child: ${loggable(String(error))}`);
     }
   }
 
@@ -187,6 +223,10 @@ export class Session {
       return;
     }
     this.#inFlight.delete(key(id));
+    if (this.#initialize !== undefined && key(this.#initialize.id) === key(id)) {
+      clearTimeout(this.#initialize.timer);
+      this.#initialize = undefined;
+    }
     for (const [token, requestId] of this.#progress) {
       if (requestId === id) {
         this.#progress.delete(token);
@@ -194,30 +234,27 @@ export class Session {
     }
   }
 
-  // Restarts the idle clock. A Session with a Caller request in flight is
-  // never idle, so a long tool call is not cut off.
+  // Restarts the idle clock on any traffic: an HTTP request on the Session or
+  // a message from either side. A request in flight does not hold it open,
+  // because a request the Caller cancelled is never answered.
   #armIdleTimer() {
     clearTimeout(this.#idleTimer);
     if (this.#ended) {
       return;
     }
-    this.#idleTimer = setTimeout(() => {
-      if (this.#inFlight.size > 0) {
-        this.#armIdleTimer();
-      } else {
-        void this.end('idle');
-      }
-    }, this.#idleMs);
+    this.#idleTimer = setTimeout(() => void this.end('idle'), this.#idleMs);
   }
 
   // Ends the Session once, whatever ends it first: the Caller's DELETE, the
-  // idle timeout, the Child exiting, or shutdown. Stops the Child.
+  // idle timeout, a Child that exits, breaks the protocol, or never answers
+  // initialize, or shutdown. Stops the Child.
   async end(reason: SessionEndReason): Promise<void> {
     if (this.#ended) {
       return;
     }
     this.#ended = true;
     clearTimeout(this.#idleTimer);
+    clearTimeout(this.#initialize?.timer);
     this.#onEnd(this, reason);
     await Promise.allSettled([this.#http.close(), this.#child.stop()]);
   }

@@ -6,14 +6,19 @@ import {
 
 import { bearerToken, matchesTokenHash } from './bearer.ts';
 import { childEnvironment } from './child-environment.ts';
-import type { Config } from './config.ts';
+import type { Config, ServiceConfig } from './config.ts';
+import { loggable } from './log.ts';
 import type { Log } from './log.ts';
-import { Session } from './session.ts';
+import { INITIALIZE_TIMEOUT_MS, Session } from './session.ts';
 import type { SessionEndReason } from './session.ts';
+
+// The Grant a request's credential derives from: the one Service it covers,
+// and the Identity, if any, that its Children receive (ADR-0001).
+export type Grant = { id: string; identity: string | undefined; service: string };
 
 // Every credential of Phase 1's harness counts as a credential of this one
 // Grant (ADR-0001), so every Session the harness opens is bound to it.
-const HARNESS_GRANT = 'harness';
+const HARNESS_GRANT_ID = 'harness';
 
 const SERVICE_PATH = /^\/([a-z][a-z0-9-]*)\/mcp$/u;
 
@@ -34,9 +39,12 @@ const notFound = () => new Response('Not Found', { status: 404 });
 // the same answer, so a Caller learns nothing about it (ADR-0002).
 const sessionNotFound = () => jsonRpcError(404, -32_001, 'Session not found');
 
+const shuttingDown = () => jsonRpcError(503, -32_000, 'Modgud is shutting down');
+
 export type PublicListener = {
   fetch: (request: Request) => Promise<Response>;
-  // Ends every Session and stops every Child.
+  // Refuses new Sessions, then ends every Session, including any still
+  // opening, and stops every Child.
   close: () => Promise<void>;
   sessionCount: () => number;
 };
@@ -45,16 +53,20 @@ export type PublicListener = {
 // configured Service, behind the harness's static bearer token.
 export const createPublicListener = ({
   config,
+  initializeTimeoutMs = INITIALIZE_TIMEOUT_MS,
   log,
   parentEnvironment,
 }: {
   config: Config;
+  initializeTimeoutMs?: number;
   log: Log;
   parentEnvironment: Readonly<Record<string, string | undefined>>;
 }): PublicListener => {
   const sessions = new Map<string, Session>();
-  // Sessions whose Child is starting or whose initialize is being answered.
-  let opening = 0;
+  // Each Session whose Child is starting, settled once it is in `sessions`
+  // or has ended.
+  const opening = new Set<Promise<Session | undefined>>();
+  let closing = false;
   const allowedOrigins = new Set(config.public.allowed_origins.map((url) => new URL(url).origin));
 
   const ended = (session: Session, reason: SessionEndReason) => {
@@ -67,15 +79,43 @@ export const createPublicListener = ({
   };
 
   // The Grant the request's credential derives from, or undefined when it
-  // carries no valid credential.
-  const authenticate = (request: Request): string | undefined => {
+  // carries no valid credential for this Service.
+  const authenticate = (request: Request, serviceName: string): Grant | undefined => {
     const token = bearerToken(request.headers.get('authorization'));
-    return token !== undefined && matchesTokenHash(token, config.harness.bearer_token_sha256)
-      ? HARNESS_GRANT
+    const valid =
+      token !== undefined &&
+      matchesTokenHash(token, config.harness.bearer_token_sha256) &&
+      config.harness.service === serviceName;
+    return valid
+      ? { id: HARNESS_GRANT_ID, identity: undefined, service: config.harness.service }
       : undefined;
   };
 
-  const initialize = async (request: Request, serviceName: string, grant: string) => {
+  // Starts a Session's Child and adds the Session to `sessions`, unless the
+  // listener began closing meanwhile: then it ends the Session at once.
+  const openSession = async (serviceName: string, service: ServiceConfig, grant: Grant) => {
+    const session = await Session.open({
+      command: service,
+      environment: childEnvironment({
+        identity: grant.identity,
+        parent: parentEnvironment,
+        service,
+      }),
+      grant: grant.id,
+      initializeTimeoutMs,
+      log,
+      onEnd: ended,
+      service: serviceName,
+    });
+    if (closing) {
+      await session.end('shutdown');
+      return undefined;
+    }
+    sessions.set(session.id, session);
+    return session;
+  };
+
+  const initialize = async (request: Request, serviceName: string, grant: Grant) => {
     if (!isJsonContentType(request.headers.get('content-type'))) {
       return jsonRpcError(
         415,
@@ -99,7 +139,10 @@ export const createPublicListener = ({
     if (!isInitializeRequest(parsed)) {
       return jsonRpcError(400, -32_000, 'Bad Request: Mcp-Session-Id header is required');
     }
-    if (sessions.size + opening >= config.public.max_sessions) {
+    if (closing) {
+      return shuttingDown();
+    }
+    if (sessions.size + opening.size >= config.public.max_sessions) {
       log.warn(`Refused a ${serviceName} session: ${String(config.public.max_sessions)} are open.`);
       return jsonRpcError(503, -32_000, 'Too many open sessions', { 'Retry-After': '30' });
     }
@@ -107,37 +150,27 @@ export const createPublicListener = ({
     if (service === undefined) {
       return notFound();
     }
-    opening += 1;
+    const opened = openSession(serviceName, service, grant);
+    opening.add(opened);
+    let session: Session | undefined;
     try {
-      let session: Session;
-      try {
-        session = await Session.open({
-          command: service,
-          environment: childEnvironment({
-            identity: undefined,
-            parent: parentEnvironment,
-            service,
-          }),
-          grant,
-          log,
-          onEnd: ended,
-          service: serviceName,
-        });
-      } catch (error) {
-        log.warn(`Could not start the ${serviceName} Child: ${String(error)}`);
-        return jsonRpcError(502, -32_603, 'The Service could not be started');
-      }
-      sessions.set(session.id, session);
-      const response = await session.handle(request, parsed);
-      if (!session.initialized) {
-        await session.end('not initialized');
-      } else if (!session.ended) {
-        log.info(`${serviceName} session ${session.id.slice(0, 8)} opened.`);
-      }
-      return response;
+      session = await opened;
+    } catch (error) {
+      log.warn(`Could not start the ${serviceName} Child: ${loggable(String(error))}`);
+      return jsonRpcError(502, -32_603, 'The Service could not be started');
     } finally {
-      opening -= 1;
+      opening.delete(opened);
     }
+    if (session === undefined) {
+      return shuttingDown();
+    }
+    const response = await session.handle(request, parsed);
+    if (!session.initialized) {
+      await session.end('not initialized');
+    } else if (!session.ended) {
+      log.info(`${serviceName} session ${session.id.slice(0, 8)} opened.`);
+    }
+    return response;
   };
 
   const fetch = async (request: Request): Promise<Response> => {
@@ -150,7 +183,7 @@ export const createPublicListener = ({
     if (origin !== null && !allowedOrigins.has(origin)) {
       return jsonRpcError(403, -32_000, 'Forbidden: Origin not allowed');
     }
-    const grant = authenticate(request);
+    const grant = authenticate(request, serviceName);
     if (grant === undefined) {
       return jsonRpcError(401, -32_001, 'Unauthorized', { 'WWW-Authenticate': 'Bearer' });
     }
@@ -161,7 +194,7 @@ export const createPublicListener = ({
         : jsonRpcError(400, -32_000, 'Bad Request: Mcp-Session-Id header is required');
     }
     const session = sessions.get(sessionId);
-    if (session === undefined || session.service !== serviceName || session.grant !== grant) {
+    if (session === undefined || session.service !== serviceName || session.grant !== grant.id) {
       return sessionNotFound();
     }
     return session.handle(request);
@@ -169,7 +202,11 @@ export const createPublicListener = ({
 
   return {
     close: async () => {
-      await Promise.all([...sessions.values()].map((session) => session.end('shutdown')));
+      closing = true;
+      await Promise.allSettled([
+        ...opening,
+        ...[...sessions.values()].map(async (session) => session.end('shutdown')),
+      ]);
     },
     fetch,
     sessionCount: () => sessions.size,

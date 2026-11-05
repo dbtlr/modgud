@@ -11,8 +11,12 @@ export type ChildOptions = {
   environment: Record<string, string>;
   // Each message the process writes to stdout.
   onMessage: (message: JSONRPCMessage) => void;
-  // A stdout line that is not a JSON-RPC message.
+  // A stdout line that is JSON but not a JSON-RPC message. The SDK's
+  // ReadBuffer skips a line that is not JSON at all without reporting it.
   onUnreadable: (error: Error) => void;
+  // Stdout can no longer be read as messages, as when one message is larger
+  // than the read buffer allows. Modgud reads no more of it.
+  onFatal: (error: Error) => void;
   // Each line the process writes to stderr.
   onStderr: (line: string) => void;
   // Called once, when the process has exited for any reason.
@@ -57,7 +61,12 @@ export class Child {
   async #readMessages(stdout: ReadableStream<Uint8Array>) {
     const buffer = new ReadBuffer();
     for await (const chunk of stdout) {
-      buffer.append(Buffer.from(chunk));
+      try {
+        buffer.append(Buffer.from(chunk));
+      } catch (error) {
+        this.#options.onFatal(asError(error));
+        return;
+      }
       for (;;) {
         let message: JSONRPCMessage | null;
         try {
