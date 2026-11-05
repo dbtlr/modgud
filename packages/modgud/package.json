@@ -5,9 +5,12 @@
   "type": "module",
   "dependencies": {
     "@loomcli/core": "0.16.0",
-    "@loomcli/plugins": "0.16.0"
+    "@loomcli/plugins": "0.16.0",
+    "@modelcontextprotocol/server": "2.4.0",
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "@loomcli/loom": "0.16.0"
+    "@loomcli/loom": "0.16.0",
+    "@modelcontextprotocol/client": "2.4.0"
   }
 }
