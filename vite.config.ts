@@ -35,7 +35,7 @@ const RELAXED_DEFAULTS = {
 } as const;
 
 // Every file name `bun test` discovers.
-const TEST_FILES = ['**/*.test.ts', '**/*_test.ts', '**/*.spec.ts', '**/*_spec.ts'];
+const TEST_FILES = ['**/*{.test,_test,.spec,_spec}.{ts,tsx,js,jsx}'];
 
 export default defineConfig({
   fmt: {

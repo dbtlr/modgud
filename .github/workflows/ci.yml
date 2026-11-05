@@ -26,6 +26,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run verify
       - name: Compile the Modgud binary
+        # bash runs with pipefail, so a binary that prints the line and then fails still fails the step.
+        shell: bash
         run: |
           bun run build
-          ./dist/modgud --version | grep -E '^modgud v[0-9]+\.[0-9]+\.[0-9]+'
+          ./dist/modgud --version | grep -E '^modgud v[0-9]+\.[0-9]+\.[0-9]+$'
