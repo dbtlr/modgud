@@ -21,7 +21,7 @@ An entry in a Grant's allow or deny list that matches tools by name, by standard
 _Avoid_: Rule, filter (a filter is the result of all Selectors)
 
 **Group**:
-A label a Service declares on its own tools, such as `admin`, so Grants can select those tools together.
+A label a Service declares in its own tool definitions, such as `admin`, so Grants can select those tools together.
 _Avoid_: Category, tag
 
 **Identity**:
@@ -29,5 +29,25 @@ The opaque value a Grant passes to its Service to say who the Caller acts for, s
 _Avoid_: User token, credential
 
 **Pairing code**:
-A single-use, short-lived code minted from a Grant and entered on the approval page to bind a chat client's OAuth registration to that Grant.
+A single-use, short-lived code minted from a Grant and entered on the Approval page to approve one chat-client authorization for that Grant.
 _Avoid_: Invite, one-time password
+
+**Approval page**:
+The page at Modgud's OAuth authorization endpoint where a person sees a chat client's name and the redirect URI its authorization code will be sent to, then enters a Pairing code to approve that client's authorization. It is served only on the Admin listener.
+_Avoid_: Login page, consent screen
+
+**Public listener**:
+The listener that binds localhost, is reached only through the tunnel, and serves only the Service endpoints and the OAuth endpoints that chat-client servers call.
+_Avoid_: Frontend, gateway
+
+**Admin listener**:
+The listener that binds the tailnet interface only and serves the Approval page, the admin API, and the admin panel.
+_Avoid_: Private port, backend
+
+**Session**:
+One MCP session between a Caller and a Service under one Grant, from `initialize` until the Caller deletes it, it idles out, its Grant is revoked or expires, or its Child exits. Modgud gives each Session its own Child.
+_Avoid_: Connection, conversation
+
+**Child**:
+The Service process Modgud starts for one Session, with the Grant's Identity in its environment.
+_Avoid_: Worker, instance
