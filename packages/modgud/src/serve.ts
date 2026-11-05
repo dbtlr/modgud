@@ -1,9 +1,8 @@
 import { once } from 'node:events';
-import { resolve } from 'node:path';
 
 import { Command } from '@loomcli/core';
 
-import { defaultConfigPath, readConfig } from './config.ts';
+import { configOption, loadConfig } from './command-config.ts';
 import type { Config } from './config.ts';
 import { loggable, timestampedLog } from './log.ts';
 import { createPublicListener } from './public-listener.ts';
@@ -41,20 +40,10 @@ const listen = (
 export const serve = new Command('serve', {
   description: 'Serve the configured Services over Streamable HTTP on the Public listener.',
 })
-  .option('config', {
-    description: 'Configuration file. Defaults to ~/.config/modgud/modgud.toml.',
-    env: 'MODGUD_CONFIG',
-    type: 'string',
-  })
+  .option('config', configOption)
   .action(async ({ host, options, out, signal }) => {
     const log = timestampedLog((line) => out.print(line));
-    const path =
-      options.config === undefined
-        ? defaultConfigPath(host.home)
-        : resolve(host.cwd, options.config);
-    const config = await readConfig(path).catch((error: unknown) =>
-      out.fatal(loggable(`Invalid configuration in ${path}: ${describeError(error)}`)),
-    );
+    const config = await loadConfig(host, options.config, out);
     const listener = createPublicListener({ config, log, parentEnvironment: host.env });
     const server = listen(config, listener.fetch, (message) => out.fatal(loggable(message)));
     try {

@@ -50,6 +50,11 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
 
       [public]
       port = 0
+      base_url = "https://modgud.example.com"
+
+      [admin]
+      base_url = "https://modgud.example.ts.net"
+      host = "100.64.0.1"
 
       [services.stub]
       command = ${JSON.stringify(process.execPath)}

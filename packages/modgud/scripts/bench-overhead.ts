@@ -95,6 +95,13 @@ const proxied = await (async () => {
     bearer_token_sha256 = "${sha256Hex(token)}"
     service = "bench"
 
+    [public]
+    base_url = "https://modgud.example.com"
+
+    [admin]
+    base_url = "https://modgud.example.ts.net"
+    host = "100.64.0.1"
+
     [services.bench]
     command = ${JSON.stringify(command)}
     args = ${JSON.stringify(args)}

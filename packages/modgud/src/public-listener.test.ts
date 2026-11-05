@@ -44,6 +44,11 @@ const start = ({
     [public]
     allowed_origins = ${JSON.stringify(origins)}
     max_sessions = ${String(maxSessions)}
+    base_url = "https://modgud.example.com"
+
+    [admin]
+    base_url = "https://modgud.example.ts.net"
+    host = "100.64.0.1"
 
     [services.stub]
     ${stub}
