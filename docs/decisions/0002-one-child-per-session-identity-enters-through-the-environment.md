@@ -27,7 +27,7 @@ Services are local stdio MCP tools, and a stdio server speaks to exactly one cli
 ## Considered options
 
 - One shared child per Service. Rejected: stdio servers are single-client, so sharing means rewriting request IDs, replaying `initialize` for each new session, and mixing Callers' Identities in one process.
-- A child per call. Rejected: every call would pay the cold start. Measured on Asgard, `mimir mcp` takes about 400 ms and `norn mcp` about 45 ms. A per-session spawn pays once.
+- A child per call. Rejected: every call would pay the cold start. Measured on the host that runs Modgud, `mimir mcp` takes about 400 ms and `norn mcp` about 45 ms. A per-session spawn pays once.
 
 ## Consequences
 

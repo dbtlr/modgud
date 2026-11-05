@@ -29,5 +29,25 @@ The opaque value a Grant passes to its Service to say who the Caller acts for, s
 _Avoid_: User token, credential
 
 **Pairing code**:
-A single-use, short-lived code minted from a Grant and entered on the approval page to bind a chat client's OAuth registration to that Grant.
+A single-use, short-lived code minted from a Grant and entered on the Approval page to bind a chat client's OAuth registration to that Grant.
 _Avoid_: Invite, one-time password
+
+**Approval page**:
+The page at Modgud's OAuth authorization endpoint where a person enters a Pairing code to approve a chat client. It is served only on the Admin listener.
+_Avoid_: Login page, consent screen
+
+**Public listener**:
+The listener that binds localhost, is reached only through the tunnel, and serves only the Service endpoints and the OAuth endpoints that chat-client servers call.
+_Avoid_: Frontend, gateway
+
+**Admin listener**:
+The listener that binds the tailnet interface only and serves the Approval page, the admin API, and the admin panel.
+_Avoid_: Private port, backend
+
+**Session**:
+One MCP session between a Caller and a Service, from `initialize` until the Caller deletes it or it idles out. Modgud gives each Session its own Child.
+_Avoid_: Connection, conversation
+
+**Child**:
+The Service process Modgud starts for one Session, with the Grant's Identity in its environment.
+_Avoid_: Worker, instance
