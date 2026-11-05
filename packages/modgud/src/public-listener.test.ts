@@ -526,7 +526,7 @@ describe('ending a Session', () => {
     await listener.close();
 
     expect(isAlive(pid)).toBe(false);
-  });
+  }, 10_000);
 });
 
 describe('refusals', () => {

@@ -41,7 +41,7 @@ token=$(openssl rand -hex 32)
 printf '%s' "$token" | sha256sum
 ```
 
-Each Session gets its own Child process. The Child's environment holds only `HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `TMPDIR`, `TZ`, and `USER` from Modgud's own environment, plus the Service's `env`. A Session ends when the Caller deletes it, when it has no traffic in either direction for the Service's idle timeout, when its Child exits or writes a single message larger than 10 MiB, or when its Child does not answer `initialize` within 30 seconds. Modgud skips a stdout line that is not JSON, and logs and skips one that is JSON but not JSON-RPC. A request still in flight does not keep a Session open.
+Each Session gets its own Child process. The Child's environment holds only `HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `TMPDIR`, `TZ`, and `USER` from Modgud's own environment, plus the Service's `env`. A Session ends when the Caller deletes it, when it has no traffic in either direction for the Service's idle timeout, when its Child exits or writes a single line larger than 10 MiB, or when its Child does not answer `initialize` within 30 seconds. Modgud skips a shorter stdout line that is not JSON, and logs and skips one that is JSON but not JSON-RPC. A request still in flight does not keep a Session open.
 
 To measure what Modgud adds to a tool call, compared with calling the Service directly over stdio:
 

@@ -264,8 +264,9 @@ export class Session {
       this.#ended = true;
       clearTimeout(this.#idleTimer);
       clearTimeout(this.#initialize?.timer);
-      this.#onEnd(this, reason, this.#stopped.promise);
+      // Stopping starts first, so a throwing onEnd cannot leave the Child running.
       void this.#stop();
+      this.#onEnd(this, reason, this.#stopped.promise);
     }
     return this.#stopped.promise;
   }
