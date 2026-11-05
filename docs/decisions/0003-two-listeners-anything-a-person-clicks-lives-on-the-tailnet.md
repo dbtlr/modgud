@@ -1,7 +1,7 @@
 ---
 type: adr
 title: ADR-0003 - Two listeners split the public surface from everything a person clicks
-description: "The public listener binds localhost behind cloudflared and serves only the MCP endpoints and the OAuth endpoints chat-client servers call. The admin listener binds the tailnet only and serves the approval page, the admin API, and the admin panel."
+description: "The Public listener binds localhost behind cloudflared and serves only the MCP endpoints and the OAuth endpoints chat-client servers call. The Admin listener binds the tailnet only and serves the Approval page, the admin API, and the admin panel."
 status: proposed
 created: 2026-11-05
 modified: 2026-11-05
@@ -18,21 +18,24 @@ Anthropic's tunnel OAuth documentation publishes an example with `authorization_
 ## Decision
 
 - **Public listener.** It binds localhost and is reached only by cloudflared. It serves `/<service>/mcp` (Streamable HTTP), OAuth protected-resource and authorization-server metadata, client registration (DCR), and the token endpoint.
-- **Admin listener.** It binds the tailnet interface only. It serves the OAuth `authorization_endpoint` (the approval page, where the Pairing code is entered), the admin API, and the admin panel.
-- **Principle: anything a person clicks lives on the tailnet.** The public listener serves only what chat-client servers call and cannot reach the admin listener's routes. Approving a connection requires being on the tailnet.
+- **Admin listener.** It binds the tailnet interface only. It serves the OAuth `authorization_endpoint` (the Approval page, where the Pairing code is entered), the admin API, and the admin panel.
+- **Principle: anything a person clicks lives on the tailnet.** The Public listener serves only what chat-client servers call and cannot reach the Admin listener's routes. Approving a connection requires being on the tailnet.
 
 ## Considered options
 
-- One listener serving everything behind the tunnel. Rejected: the approval page and admin API would be reachable from the internet, guarded only by application checks.
-- Put an identity provider in front of the whole proxy, as Cloudflare MCP Portals and Pomerium do. Rejected: it does not fit Modgud's own OAuth server, and those products cannot run stdio tools.
+- One listener serving everything behind the tunnel. Rejected: the Approval page and admin API would be reachable from the internet, guarded only by application checks.
+- Put an identity provider in front of the whole proxy, as Cloudflare MCP Portals and Pomerium do. Rejected: those products put an identity provider in front but cannot run stdio tools.
 
 ## Consequences
 
 An approver must be on the tailnet to pair a chat client. Pairing from a phone off the tailnet does not work.
-The split depends on chat clients loading the approval URL in the person's browser. If either claude.ai or ChatGPT rejects the split-host approval page, the design changes before any Grant work exists, so Phase 1 tests this first.
+The split depends on chat clients loading the approval URL in the person's browser. If either claude.ai or ChatGPT rejects the split-host Approval page, the design changes before any Grant work exists, so Phase 1 tests this first.
 The admin API and panel also need their own authentication on the tailnet, settled in Phase 2: a Tailscale `whois` allowlist for the panel and an admin token for the CLI. The CLI reads the admin URL from configuration, so an agent on any tailnet host can manage Grants.
-The panel's pages (Grants, pairing, live sessions, the audit log) arrive in Phase 4.
+The panel's pages (Grants, pairing, live Sessions, the audit log) arrive in Phase 4.
+Open item, Phase 1: how the Admin listener gets TLS for the authorization endpoint, from `tailscale cert`, Tailscale Serve, or a private CA.
+Open item, Phase 1: the configured public base URL that the Public listener uses for `issuer`, resource URIs, and metadata, because it sees plain HTTP from cloudflared.
 
 ## Changelog
 
 - 2026-11-05: Proposed. It becomes accepted as the Phase 1 code lands.
+- 2026-11-05: Revised while proposed. The identity-provider option keeps only its sourced reason, and TLS and the public base URL are recorded as open items.

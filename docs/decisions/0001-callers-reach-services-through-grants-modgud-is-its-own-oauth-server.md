@@ -1,7 +1,7 @@
 ---
 type: adr
 title: ADR-0001 - Callers reach a Service through a Grant, and Modgud is its own OAuth 2.1 authorization server
-description: "Every Caller resolves to a Grant, and every credential derives from one: a static bearer token for agents, or OAuth tokens that Modgud itself issues to chat clients after a Pairing code binds them on a tailnet-only approval page."
+description: "Every Caller resolves to a Grant, and every credential derives from one: a static bearer token for agents, or OAuth tokens that Modgud itself issues to chat clients after a Pairing code approves the authorization for one Grant on the tailnet-only Approval page."
 status: proposed
 created: 2026-11-05
 modified: 2026-11-05
@@ -24,18 +24,26 @@ A survey on 2026-11-04 found no product that combines all four needs: its own OA
 ## Decision
 
 - **A Grant is the managed object.** It is an admin-managed record for one Caller and exactly one Service: a label, `expires_at`, allow and deny Selectors, an optional Identity, `revoked_at`, and the OAuth client name and redirect host recorded at pairing. The Grant's expiry caps every credential derived from it, and revoking the Grant ends them all.
-- **Credentials derive from the Grant.** A static bearer token is a random secret shown once and stored only as a hash. OAuth tokens are issued by Modgud to a chat client bound to the Grant.
-- **Modgud is its own OAuth 2.1 authorization server.** It serves protected-resource and authorization-server metadata, DCR and CIMD client registration, a token endpoint, PKCE S256, and rotating refresh tokens. Access tokens are short-lived and audience-bound to the `resource` the client sends. Modgud borrows `mcp-stdio`'s OAuth design as a reference and does not fork it.
-- **A Pairing code binds a chat client to a Grant.** An admin mints a single-use code from the Grant, with a lifetime of minutes. The person enters it on the OAuth approval page, which is the `authorization_endpoint`. The page lives on the tailnet-only admin listener ([ADR-0003](0003-two-listeners-anything-a-person-clicks-lives-on-the-tailnet.md)), so approving a connection requires being on the tailnet. One code redeems one client registration; re-pairing takes a new code.
+- **Credentials derive from the Grant.** A static bearer token is a random secret shown once and stored only as a hash. OAuth tokens are issued by Modgud to a chat client for one Grant.
+- **Modgud is its own OAuth 2.1 authorization server.** It serves authorization-server metadata, DCR and CIMD client registration, a token endpoint, and PKCE S256. Access tokens last about one hour, refresh tokens rotate, and the Grant's expiry caps both. Modgud borrows `mcp-stdio`'s OAuth design as a reference and does not fork it.
+- **Modgud implements what the MCP authorization spec requires.** A request to a Service without a valid credential gets a 401 whose `WWW-Authenticate` header carries `resource_metadata`. The token endpoint accepts form-urlencoded bodies.
+- **Each Service is its own protected resource.** A Service's canonical resource URI is its public `/<service>/mcp` URL, and each Service has its own protected-resource metadata. The `resource` in the authorization request, the code exchange, and every refresh must equal the Grant's Service URI, or Modgud refuses the request. The token's audience is that URI, and Modgud refuses a token presented at another Service's path.
+- **An authorization belongs to one Grant, not to a client registration.** A client registration (a DCR or CIMD `client_id`) identifies an application, and one registration can be reused across Grants. Each approved authorization, with the authorization code and the token family that come from it, belongs to the one Grant whose Pairing code approved it. In v1, every authorization request requires a Pairing code.
+- **A Pairing code approves one authorization.** An admin mints a single-use code from the Grant, with a lifetime of minutes. The person enters it on the Approval page, which is the `authorization_endpoint`. The page lives on the tailnet-only Admin listener ([ADR-0003](0003-two-listeners-anything-a-person-clicks-lives-on-the-tailnet.md)), so approving a connection requires being on the tailnet. Re-pairing takes a new code.
+- **Redirects match exactly, and the Approval page shows them.** Modgud compares `redirect_uri` to the registration's redirect URIs by exact match. Registration is open to the internet, and whoever registers a client chooses its name. The Approval page therefore shows the client name and the exact redirect URIs before the person enters a Pairing code.
 - **Selectors filter tools, and deny wins.** `tool:<name>`, `hint:readOnly`, `hint:destructive`, `hint:idempotent`, `hint:openWorld`, and `group:<name>` match tools. With no allow list every tool passes; with one, only matches pass; the deny list then removes matches. Modgud enforces this at `tools/list` and refuses at `tools/call`, because a client can call a hidden tool by name. Modgud never rewrites a tool definition or injects arguments.
-- **Grants live in SQLite.** Services live in the config file in v1.
+- **A `hint:` Selector reads one MCP ToolAnnotations field.** `hint:readOnly` reads `readOnlyHint`, `hint:destructive` reads `destructiveHint`, `hint:idempotent` reads `idempotentHint`, and `hint:openWorld` reads `openWorldHint`. An absent field takes the MCP spec's default, so an unannotated tool counts as destructive and open-world.
+- **A `group:` Selector reads the Service's own Group declaration.** A Service declares Groups in its Tool `_meta` under a Modgud-namespaced key. The proposed shape is `"modgud/groups"` with a list of strings. The exact key and value schema are settled in Phase 2, before Services adopt them. A malformed declaration matches no `group:` Selector.
+- **A filtered tool looks absent.** A `tools/call` for a filtered tool gets the same error as a call to a tool that does not exist, so a Caller cannot tell a hidden tool from an absent one.
+- **One instance on one host.** Modgud is one instance on one host, and every Service runs on that host. Grants live in one SQLite store, with no multi-host coordination. Services live in the config file in v1.
+- **Phase 1 takes its credentials from configuration.** Phase 1 uses one static bearer token and one Pairing code from configuration instead of Grant-minted ones. Grant-minted credentials arrive in Phase 2.
 
 ## Considered options
 
 - Static bearer tokens alone, each declaring its Service, expiry, and deny list. Rejected: chat clients cannot use them.
 - Adopt `mcp-stdio` or another surveyed product. Rejected: none combines an OAuth server that chat clients accept, Grants, Identity passthrough, and tool filtering. `mcp-stdio` is also Python and limited to one backend.
 - Put an identity provider in front, as Cloudflare MCP Portals and Pomerium do. Rejected: they cannot run stdio tools.
-- Build authentication into each tool, one ADR at a time, as Muninn did. Rejected: every CLI-based MCP tool would need its own OAuth server to reach chat clients.
+- Build authentication into each tool, one decision at a time, as Muninn did. Rejected: each tool would own caller authentication itself, instead of every tool sitting behind one guarded proxy.
 
 ## Consequences
 
@@ -43,9 +51,19 @@ Every CLI-based MCP tool becomes reachable from every chat client without owning
 Modgud is security-sensitive code: an OAuth server, credential storage, and a public endpoint. A bug exposes tools to the internet.
 Its value depends on chat clients keeping their current OAuth behavior, and Modgud must track MCP authorization spec revisions and client quirks. The Phase 1 end-to-end connection from claude.ai and ChatGPT is kept as a repeatable check.
 Static bearer tokens for agents are independently justified even if chat-client OAuth never works.
-Sharp edges to confirm in Phase 1: claude.ai uses only the first `authorization_servers` entry and needs a 401 with `WWW-Authenticate` to start sign-in; the token endpoint must accept form-urlencoded bodies; discovery, registration, and token calls have a 10-second limit; ChatGPT's redirect URI is `https://chatgpt.com/connector_platform_oauth_redirect` or a per-connector callback URL; the `Origin` header behavior of chat clients is unverified.
-Open items: access tokens last about an hour with Grant expiry capping both token kinds; authentication of the admin API and panel on the tailnet (a Tailscale `whois` allowlist for the panel, an admin token for the CLI) is settled in Phase 2; whether ChatGPT opens the tailnet-only approval page in the browser is unconfirmed; Claude Duet, ChatGPT Dot, Grokbot, and Meta Muse were named as targets but their auth support is unverified.
+One client registration can hold authorizations for several Grants, and revoking one Grant ends only the tokens that came from that Grant's authorization.
+`deny hint:destructive` removes every tool that does not set `destructiveHint` to `false`, including every unannotated tool.
+A malformed Group declaration makes a `group:` allow list fail closed, because the tool is hidden. It makes a `group:` deny list fail open, because the tool passes. An allow list is the safer way to keep a Grant away from tools it must not reach.
+Sharp edges to confirm in Phase 1: claude.ai uses only the first `authorization_servers` entry; discovery, registration, and token calls have a 10-second limit; ChatGPT's redirect URI is `https://chatgpt.com/connector_platform_oauth_redirect` or a per-connector callback URL; the `Origin` header behavior of chat clients is unverified.
+Open item, after Phase 1 measures client behavior: whether an already-paired client may re-authorize without a Pairing code.
+Open item, Phase 1 and Phase 2: abuse limits on the public, unauthenticated registration endpoint and on Pairing code entry, including rate limits, code entropy, and registration cleanup.
+Open item, Phase 2: Selectors filter tools only. How Modgud handles `resources/*` and `prompts/*` for a Grant with Selectors is settled before such Grants ship.
+Open item, Phase 2: credential cardinality per Grant, meaning several static tokens for rotation, a static token alongside OAuth, and what re-pairing does to an earlier authorization.
+Open item, Phase 2: authentication of the admin API and panel on the tailnet, with a Tailscale `whois` allowlist for the panel and an admin token for the CLI.
+Open item, Phase 1: whether ChatGPT opens the tailnet-only Approval page in the browser.
+Open item, Phase 1 and later: Claude Duet, ChatGPT Dot, Grokbot, and Meta Muse were named as targets, but their auth support is unverified.
 
 ## Changelog
 
 - 2026-11-05: Proposed. It becomes accepted as the Phase 1 code lands.
+- 2026-11-05: Revised while proposed. Each authorization and its tokens belong to one Grant, and each Service is its own protected resource. Spec-required behavior and token lifetimes move into the decision, and new open items are recorded.
