@@ -1,7 +1,7 @@
 ---
 type: adr
 title: ADR-0002 - Each MCP session gets its own child process, and the Grant's Identity enters through its environment
-description: "Modgud starts one Child per Session on initialize and binds the Session to the Grant that opened it. The Child's environment comes only from the Service's configuration, and only the Grant sets the Identity variable, which is trusted only as far as the OS account that runs Modgud and the Service."
+description: "Modgud starts one Child per Session on initialize and binds the Session to the Grant that opened it. The Child's environment comes only from the Service's configuration and a fixed base allowlist, and only the Grant sets the Identity variable, which is trusted only as far as the OS account that runs Modgud and the Service."
 status: proposed
 created: 2026-11-05
 modified: 2026-11-05
@@ -16,11 +16,11 @@ Services are local stdio MCP tools, and a stdio server speaks to exactly one cli
 ## Decision
 
 - **One Child per Session.** Modgud spawns the Service's command on `initialize`. It stops the Child on session DELETE or when the Service's idle timeout expires. Notifications and server-to-client requests pass through within the Session.
-- **A Session is bound to the Grant that opened it.** Every request on a Session (POST, GET, DELETE, or a reconnect) carries a credential that is currently valid and derives from the same Grant that opened the Session. Modgud refuses a request that carries another Grant's credential, or no credential, and never routes it to the Child.
+- **A Session is bound to the Grant that opened it.** Every request on a Session (POST, GET, DELETE, or a reconnect) carries a credential that is currently valid and derives from the same Grant that opened the Session. A request with no valid credential gets the 401 that [ADR-0001](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md) requires. A request whose credential derives from another Grant gets the same HTTP 404 as an unknown session id, so it learns nothing about the Session. Modgud never routes either request to the Child.
 - **A Grant's end ends its Sessions.** Revoking or expiring a Grant ends its Sessions and stops their Children at once, not at idle timeout.
 - **A Child that exits ends its Session.** When a Child exits on its own, its Session ends. Later requests on that session id get the MCP "session not found" response, HTTP 404.
-- **A Child's environment comes only from configuration.** Modgud builds it from the Service's configured environment plus a minimal base, such as `PATH`. A Child never inherits Modgud's environment.
-- **Only the Grant sets the Identity variable.** The environment variable that the Service's configuration names for Identity is reserved. Modgud removes any configured or inherited value for it, then sets it only from the Grant. When the Grant has no Identity, the variable is absent. A Service without an Identity variable receives none.
+- **A Child's environment comes only from configuration.** Modgud builds it from the Service's configured environment plus a fixed allowlist of base variables copied from Modgud's environment, such as `PATH` and `HOME`; the exact list is set in Phase 1. Nothing else from Modgud's environment reaches the Child.
+- **Only the Grant sets the Identity variable.** The environment variable that the Service's configuration names for Identity is reserved. Modgud removes any value for it from the configured environment and the base, then sets it only from the Grant. When the Grant has no Identity, the variable is absent. A Service without an Identity variable receives none.
 - **This is the contract Services build against.**
   - Trust comes from the channel: Modgud starts the Child and sets the Identity in its environment.
   - Modgud forwards no tool-level credential.

@@ -33,7 +33,7 @@ A single-use, short-lived code minted from a Grant and entered on the Approval p
 _Avoid_: Invite, one-time password
 
 **Approval page**:
-The page at Modgud's OAuth authorization endpoint where a person sees a chat client's name and redirect URIs, then enters a Pairing code to approve that client's authorization. It is served only on the Admin listener.
+The page at Modgud's OAuth authorization endpoint where a person sees a chat client's name and the redirect URI its request names, then enters a Pairing code to approve that client's authorization. It is served only on the Admin listener.
 _Avoid_: Login page, consent screen
 
 **Public listener**:
