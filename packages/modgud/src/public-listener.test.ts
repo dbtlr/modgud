@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
@@ -134,6 +134,17 @@ const post = (url: URL, headers: Record<string, string>, body = initializeBody) 
     method: 'POST',
   });
 
+// Whether a process with this id exists, counting one that has exited but has
+// not yet been reaped.
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const waitFor = async (condition: () => boolean | Promise<boolean>, timeoutMs = 3000) => {
   const deadline = Date.now() + timeoutMs;
   // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
@@ -157,12 +168,14 @@ describe('a Caller with the harness token', () => {
       'echo',
       'environment',
       'exit',
+      'notify-after-cancel',
       'oversized',
       'pid',
       'progress',
       'roots',
       'slow',
       'unmatched-response',
+      'wait-for-cancel',
     ]);
     expect(echo?.annotations).toEqual({ readOnlyHint: true });
     expect(echo?.inputSchema).toMatchObject({
@@ -345,6 +358,73 @@ describe('ending a Session', () => {
     expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
   });
 
+  test('an uncancelled call the Child never answers does not keep its Session past the idle timeout', async () => {
+    const { lines, listener, url } = start({ idleMinutes: 0.005 });
+    const { client } = await connect(url);
+    const abandon = new AbortController();
+    const call = (async () => {
+      try {
+        await client.callTool({ arguments: {}, name: 'slow' }, { signal: abandon.signal });
+      } catch {
+        // Expected: the test abandons the call once its Session has ended.
+      }
+    })();
+
+    await waitFor(() => listener.sessionCount() === 0);
+    abandon.abort();
+    await call;
+    expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
+  });
+
+  test("after the Caller cancels one call, the Child's notification without a progress token reaches the other call in flight", async () => {
+    const { lines, url } = start();
+    const { transport } = await connect(url);
+    const headers = {
+      Authorization: `Bearer ${TOKEN}`,
+      'Mcp-Protocol-Version': transport.protocolVersion ?? '',
+      'Mcp-Session-Id': transport.sessionId ?? '',
+    };
+    const callTool = (id: string, name: string) =>
+      post(
+        url,
+        headers,
+        JSON.stringify({
+          id,
+          jsonrpc: '2.0',
+          method: 'tools/call',
+          params: { arguments: {}, name },
+        }),
+      );
+
+    // Bun sends an event stream's headers with its first event, so neither
+    // call's response arrives until the Child writes to it. The cancelled
+    // call's never does, so the test does not wait for it.
+    void (async () => {
+      try {
+        await callTool('cancelled', 'wait-for-cancel');
+      } catch {
+        // Expected when the listener stops under the open stream.
+      }
+    })();
+    await waitFor(() => lines.some((line) => line.endsWith('stderr: waiting for cancel')));
+    const other = callTool('other', 'notify-after-cancel');
+    await waitFor(() => lines.some((line) => line.endsWith('stderr: waiting to notify')));
+    const cancel = await post(
+      url,
+      headers,
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'notifications/cancelled',
+        params: { requestId: 'cancelled' },
+      }),
+    );
+
+    expect(cancel.status).toBe(202);
+    const stream = await (await other).text();
+    expect(stream).toContain('after cancel');
+    expect(stream).toContain('notified');
+  });
+
   test('a Child that never answers initialize is ended within the bound', async () => {
     const marker = `marker-${crypto.randomUUID()}`;
     const { lines, listener, url } = start({ initializeTimeoutMs: 200, marker, stubMode: 'mute' });
@@ -376,43 +456,76 @@ describe('ending a Session', () => {
   });
 
   test('an initialize after close gets 503 and starts no Child', async () => {
-    const marker = `marker-${crypto.randomUUID()}`;
-    const { listener, url } = start({ marker });
+    const { listener, url } = start();
     await listener.close();
+    const spawn = spyOn(Bun, 'spawn');
 
-    const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
+    try {
+      const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
 
-    expect(response.status).toBe(503);
-    expect(listener.sessionCount()).toBe(0);
-    expect(await processesWith(marker)).toEqual([]);
+      expect(response.status).toBe(503);
+      expect(listener.sessionCount()).toBe(0);
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      spawn.mockRestore();
+    }
   });
 
-  test('a Session still opening when close runs is ended, and its Child stopped', async () => {
-    const marker = `marker-${crypto.randomUUID()}`;
-    const race: { closed?: Promise<void> | undefined; listener?: PublicListener } = {};
+  test('close does not resolve until a Session still opening is ended and its Child stopped', async () => {
+    const spawn = spyOn(Bun, 'spawn');
+    const race: {
+      childAlive?: boolean;
+      closed?: Promise<void> | undefined;
+      listener?: PublicListener;
+    } = {};
     // The listener reads the parent environment while it opens a Session, so
-    // reading PATH starts close() in exactly that window.
+    // reading PATH starts close() in exactly that window. Whether the Child
+    // is alive is read as soon as close() resolves, before Modgud could reap
+    // a Child that close() did not wait for.
     const parentEnvironment = {
       ...process.env,
       get PATH() {
         queueMicrotask(() => {
-          race.closed = race.listener?.close();
+          race.closed = (async () => {
+            await race.listener?.close();
+            race.childAlive = spawn.mock.results.some(({ value }) =>
+              isAlive((value as Bun.Subprocess).pid),
+            );
+          })();
         });
         return process.env.PATH;
       },
     };
-    const instance = start({ marker, parentEnvironment });
-    race.listener = instance.listener;
-    const { lines, url } = instance;
 
-    const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
-    await race.closed;
+    try {
+      const instance = start({ parentEnvironment });
+      race.listener = instance.listener;
+      const { lines, url } = instance;
 
-    expect(race.closed).toBeDefined();
-    expect(response.status).toBe(503);
-    expect(instance.listener.sessionCount()).toBe(0);
-    expect(lines.some((line) => line.endsWith('ended: shutdown.'))).toBe(true);
-    expect(await processesWith(marker)).toEqual([]);
+      const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
+      await race.closed;
+
+      expect(race.closed).toBeDefined();
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(race.childAlive).toBe(false);
+      expect(response.status).toBe(503);
+      expect(instance.listener.sessionCount()).toBe(0);
+      expect(lines.some((line) => line.endsWith('ended: shutdown.'))).toBe(true);
+    } finally {
+      spawn.mockRestore();
+    }
+  });
+
+  test('close does not resolve until the Child of a Session already ending has stopped', async () => {
+    const { listener, url } = start({ idleMinutes: 0.005, stubMode: 'ignore-sigterm' });
+    const { client } = await connect(url);
+    const pid = Number(firstText(await client.callTool({ arguments: {}, name: 'pid' })));
+    await waitFor(() => listener.sessionCount() === 0);
+    expect(isAlive(pid)).toBe(true);
+
+    await listener.close();
+
+    expect(isAlive(pid)).toBe(false);
   });
 });
 

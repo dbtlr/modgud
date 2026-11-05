@@ -10,7 +10,7 @@ import type { Config, ServiceConfig } from './config.ts';
 import { loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { INITIALIZE_TIMEOUT_MS, Session } from './session.ts';
-import type { SessionEndReason } from './session.ts';
+import type { SessionEndHandler } from './session.ts';
 
 // The Grant a request's credential derives from: the one Service it covers,
 // and the Identity, if any, that its Children receive (ADR-0001).
@@ -44,7 +44,8 @@ const shuttingDown = () => jsonRpcError(503, -32_000, 'Modgud is shutting down')
 export type PublicListener = {
   fetch: (request: Request) => Promise<Response>;
   // Refuses new Sessions, then ends every Session, including any still
-  // opening, and stops every Child.
+  // opening, and resolves once every Child has stopped, including those of
+  // Sessions that were already ending.
   close: () => Promise<void>;
   sessionCount: () => number;
 };
@@ -66,13 +67,23 @@ export const createPublicListener = ({
   // Each Session whose Child is starting, settled once it is in `sessions`
   // or has ended.
   const opening = new Set<Promise<Session | undefined>>();
+  // For each Session that has ended, the promise that settles once its Child
+  // has stopped, until it does.
+  const stopping = new Set<Promise<void>>();
   let closing = false;
   const allowedOrigins = new Set(config.public.allowed_origins.map((url) => new URL(url).origin));
 
-  const ended = (session: Session, reason: SessionEndReason) => {
+  const untilStopped = async (stopped: Promise<void>) => {
+    stopping.add(stopped);
+    await stopped;
+    stopping.delete(stopped);
+  };
+
+  const ended: SessionEndHandler = (session, reason, stopped) => {
     if (sessions.get(session.id) === session) {
       sessions.delete(session.id);
     }
+    void untilStopped(stopped);
     if (reason !== 'not initialized') {
       log.info(`${session.service} session ${session.id.slice(0, 8)} ended: ${reason}.`);
     }
@@ -203,10 +214,12 @@ export const createPublicListener = ({
   return {
     close: async () => {
       closing = true;
-      await Promise.allSettled([
-        ...opening,
-        ...[...sessions.values()].map(async (session) => session.end('shutdown')),
-      ]);
+      for (const session of sessions.values()) {
+        void session.end('shutdown');
+      }
+      // Each Session just ended is now in `stopping`; each one still opening
+      // is ended as soon as it opens.
+      await Promise.allSettled([...opening, ...stopping]);
     },
     fetch,
     sessionCount: () => sessions.size,

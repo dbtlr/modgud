@@ -1,7 +1,10 @@
 // A stdio MCP server that integration tests start as a Service. Each tool
 // exercises one thing the proxy must pass through unchanged, or one way a
 // Service can misbehave. With `STUB_MODE=mute` it reads its input and never
-// answers, not even `initialize`.
+// answers, not even `initialize`. With `STUB_MODE=ignore-sigterm` it serves
+// as usual but ignores SIGTERM, so only SIGKILL stops it.
+import { once } from 'node:events';
+
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
@@ -57,6 +60,39 @@ server.registerTool('slow', { description: 'Answer only after a minute.' }, asyn
   return text('late');
 });
 
+// Settles once the Caller cancels a `wait-for-cancel` call.
+const cancelled = Promise.withResolvers<void>();
+
+server.registerTool(
+  'wait-for-cancel',
+  { description: 'Answer nothing until the Caller cancels the call.' },
+  async (context) => {
+    process.stderr.write('waiting for cancel\n');
+    await once(context.mcpReq.signal, 'abort');
+    cancelled.resolve();
+    return text('cancelled');
+  },
+);
+
+server.registerTool(
+  'notify-after-cancel',
+  {
+    description:
+      'Once a wait-for-cancel call is cancelled, write a notification without a progress token, then answer.',
+  },
+  async () => {
+    process.stderr.write('waiting to notify\n');
+    await cancelled.promise;
+    const notification = {
+      jsonrpc: '2.0',
+      method: 'notifications/message',
+      params: { data: 'after cancel', level: 'info' },
+    };
+    process.stdout.write(`${JSON.stringify(notification)}\n`);
+    return text('notified');
+  },
+);
+
 // More than the 10 MiB a Child's single message may take.
 server.registerTool('oversized', { description: 'Return an 11 MiB result.' }, () =>
   text('x'.repeat(11 * 1024 * 1024)),
@@ -74,6 +110,11 @@ server.registerTool(
 );
 
 process.stderr.write('stub-service started\n');
+if (process.env.STUB_MODE === 'ignore-sigterm') {
+  process.on('SIGTERM', () => {
+    process.stderr.write('ignored SIGTERM\n');
+  });
+}
 if (process.env.STUB_MODE === 'mute') {
   process.stdin.resume();
 } else {

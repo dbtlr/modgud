@@ -46,6 +46,12 @@ const progressTokenOf = (message: JSONRPCMessage): string | number | undefined =
   return typeof token === 'string' || typeof token === 'number' ? token : undefined;
 };
 
+export type SessionEndHandler = (
+  session: Session,
+  reason: SessionEndReason,
+  stopped: Promise<void>,
+) => void;
+
 export type SessionOptions = {
   command: Pick<ServiceConfig, 'args' | 'command' | 'cwd' | 'idle_timeout_minutes'>;
   environment: Record<string, string>;
@@ -53,7 +59,9 @@ export type SessionOptions = {
   grant: string;
   initializeTimeoutMs: number;
   log: Log;
-  onEnd: (session: Session, reason: SessionEndReason) => void;
+  // Called once, when the Session starts ending, with a promise that settles
+  // once its Child has stopped.
+  onEnd: SessionEndHandler;
   service: string;
 };
 
@@ -77,7 +85,7 @@ export class Session {
   readonly #idleMs: number;
   readonly #initializeTimeoutMs: number;
   readonly #log: Log;
-  readonly #onEnd: (session: Session, reason: SessionEndReason) => void;
+  readonly #onEnd: SessionEndHandler;
   // Caller requests the Child has not answered and the Caller has not
   // cancelled, by key, and the progress tokens they carry.
   readonly #inFlight = new Map<string, RequestId>();
@@ -86,6 +94,8 @@ export class Session {
   // The Caller's initialize request, while the Child has not answered it.
   #initialize: { id: RequestId; timer: ReturnType<typeof setTimeout> } | undefined;
   #ended = false;
+  // Settles once the Session has ended and its Child has stopped.
+  readonly #stopped = Promise.withResolvers<void>();
 
   private constructor(options: SessionOptions) {
     this.grant = options.grant;
@@ -247,15 +257,21 @@ export class Session {
 
   // Ends the Session once, whatever ends it first: the Caller's DELETE, the
   // idle timeout, a Child that exits, breaks the protocol, or never answers
-  // initialize, or shutdown. Stops the Child.
-  async end(reason: SessionEndReason): Promise<void> {
-    if (this.#ended) {
-      return;
+  // initialize, or shutdown. Stops the Child. Every call returns the same
+  // promise, which settles once the Child has stopped.
+  end(reason: SessionEndReason): Promise<void> {
+    if (!this.#ended) {
+      this.#ended = true;
+      clearTimeout(this.#idleTimer);
+      clearTimeout(this.#initialize?.timer);
+      this.#onEnd(this, reason, this.#stopped.promise);
+      void this.#stop();
     }
-    this.#ended = true;
-    clearTimeout(this.#idleTimer);
-    clearTimeout(this.#initialize?.timer);
-    this.#onEnd(this, reason);
+    return this.#stopped.promise;
+  }
+
+  async #stop() {
     await Promise.allSettled([this.#http.close(), this.#child.stop()]);
+    this.#stopped.resolve();
   }
 }
