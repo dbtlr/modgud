@@ -102,7 +102,7 @@ Registration is open to the internet, so it is bounded. A request's source is th
 
 `grant_type=refresh_token` requires `refresh_token` and `client_id`.
 
-- The refresh token must be the current one of its authorization, or the one it replaced (below), and issued to this `client_id`. `resource`, when present, must equal the authorization's resource.
+- The refresh token must be the current one of its authorization, or within 30 seconds the one it replaced (below), and issued to this `client_id`. `resource`, when present, must equal the authorization's resource.
 - Each refresh returns a new access token and a new refresh token, and the presented refresh token stops working in the same transaction.
 
 Errors:
@@ -115,7 +115,7 @@ Errors:
 **Replay.** Presenting a spent authorization code revokes the authorization it came from, with every token issued from it, and gets `invalid_grant`. Every refresh token names its authorization's family (below), so Modgud recognizes any refresh token the authorization ever issued:
 
 - The current refresh token rotates.
-- The refresh token that the current one replaced also rotates, once, within 30 seconds of being replaced. The new pair supersedes the current one. A client that lost a refresh response, or raced itself, keeps its connection.
+- Within 30 seconds of a rotation, the refresh token it replaced gets the same response again: the same access token and the same new refresh token. Modgud holds that response in memory for those 30 seconds only. A client that lost a refresh response, or raced itself, keeps its connection, and the family never forks.
 - Any other refresh token of the family is a replay. It revokes the authorization, with every token issued from it, and gets `invalid_grant`.
 
 ## Admin listener endpoints
@@ -209,4 +209,4 @@ Both commands read the same configuration file as `modgud serve` and act on its 
 ## Open items for the end-to-end proof
 
 - Whether claude.ai and ChatGPT send `resource`. Modgud defaults it when absent.
-- Whether a client retries a refresh more than 30 seconds after the original, or races more than two refreshes. Either revokes the authorization, and the person pairs again.
+- Whether a client retries a refresh more than 30 seconds after the original, or across a Modgud restart. Either revokes the authorization, and the person pairs again.
