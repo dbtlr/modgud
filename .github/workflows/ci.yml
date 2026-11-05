@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, including one stacked on another branch, gets the gate.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -20,14 +20,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
         with:
           version: 2026.10.2
       - run: bun install --frozen-lockfile
       - run: bun run verify
       - name: Compile the Modgud binary
-        # bash runs with pipefail, so a binary that prints the line and then fails still fails the step.
+        # bash runs with -e, so a binary that fails fails the step; its whole output must match the package version.
         shell: bash
         run: |
           bun run build
-          ./dist/modgud --version | grep -E '^modgud v[0-9]+\.[0-9]+\.[0-9]+$'
+          expected="modgud v$(bun -p "require('./packages/modgud/package.json').version")"
+          actual="$(./dist/modgud --version)"
+          test "$actual" = "$expected" || { echo "expected '$expected', got '$actual'"; exit 1; }
