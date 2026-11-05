@@ -10,7 +10,7 @@ It follows the [MCP authorization specification](https://modelcontextprotocol.io
 
 ## Addresses
 
-Two configured base URLs name every URL below. Each is an `https` URL with no path, no trailing slash, no query, and no fragment, and Modgud uses each as the exact string configured. It never rebuilds them from a request's `Host` header.
+Two configured base URLs name every URL below. Each is an `https` URL with no explicit default port, no path, no trailing slash, no query, and no fragment, and Modgud uses each as the exact string configured. It never rebuilds them from a request's `Host` header.
 
 - `public.base_url` is the address callers use through the tunnel. It is the `issuer`, the one entry of `authorization_servers`, and the `iss` of every authorization response, all as the same string. A Service's resource URI is `<public.base_url>/<service>/mcp`.
 - `admin.base_url` is the HTTPS address of the Admin listener on the tailnet, served by a TLS-terminating proxy that passes the `Host` header through ([ADR-0003](decisions/0003-two-listeners-anything-a-person-clicks-lives-on-the-tailnet.md)). The `authorization_endpoint` is `<admin.base_url>/authorize`.
@@ -78,7 +78,7 @@ A Session is bound to the credential source that opened it: the static token, or
 
 A valid request gets HTTP 201 with `client_id`, `client_id_issued_at`, `client_name` when given, `redirect_uris`, `grant_types: ["authorization_code", "refresh_token"]`, `response_types: ["code"]`, and `token_endpoint_auth_method: "none"`. There is no `client_secret`. An invalid request gets HTTP 400 with `invalid_redirect_uri` or `invalid_client_metadata`.
 
-Registration is open to the internet, so it is bounded. A request's source is the `CF-Connecting-IP` header, which cloudflared sets, or the peer address when the header is absent.
+Registration is open to the internet, so it is bounded. A request's source is the `CF-Connecting-IP` header, which cloudflared sets, or the peer address when the header is absent. An IPv6 source counts by its /64 prefix.
 
 - At most 10 registrations from one source, and 100 overall, in any 10 minutes. Past either, HTTP 429 with `Retry-After`.
 - At most 500 stored registrations. A new registration past that evicts the oldest one that has never been approved.
@@ -102,8 +102,8 @@ Registration is open to the internet, so it is bounded. A request's source is th
 
 `grant_type=refresh_token` requires `refresh_token` and `client_id`.
 
-- The refresh token must be the current one of its authorization and issued to this `client_id`. `resource`, when present, must equal the authorization's resource.
-- Each refresh returns a new access token and a new refresh token, and the old refresh token stops working in the same transaction.
+- The refresh token must be the current one of its authorization, or the one it replaced (below), and issued to this `client_id`. `resource`, when present, must equal the authorization's resource.
+- Each refresh returns a new access token and a new refresh token, and the presented refresh token stops working in the same transaction.
 
 Errors:
 
@@ -112,14 +112,18 @@ Errors:
 - `invalid_grant` for an unknown, spent, expired, or revoked code or refresh token, a wrong `code_verifier` or `redirect_uri`, or a code or refresh token issued to another client.
 - `invalid_target` for a `resource` that does not match.
 
-**Replay.** Presenting a spent authorization code, or a refresh token that was rotated away more than 30 seconds earlier, revokes the authorization it came from, with every token issued from it, and gets `invalid_grant`. A refresh token rotated away within the last 30 seconds gets `invalid_grant` without revoking, so a client that retries a refresh after a lost response or races itself does not lose its connection.
+**Replay.** Presenting a spent authorization code revokes the authorization it came from, with every token issued from it, and gets `invalid_grant`. Every refresh token names its authorization's family (below), so Modgud recognizes any refresh token the authorization ever issued:
+
+- The current refresh token rotates.
+- The refresh token that the current one replaced also rotates, once, within 30 seconds of being replaced. The new pair supersedes the current one. A client that lost a refresh response, or raced itself, keeps its connection.
+- Any other refresh token of the family is a replay. It revokes the authorization, with every token issued from it, and gets `invalid_grant`.
 
 ## Admin listener endpoints
 
 The Admin listener serves only `/authorize`. Every other path gets HTTP 404.
 
-- A request whose `Host` header is not the host of `admin.base_url` gets HTTP 421. This keeps a page that rebinds its own name to the tailnet address from reading or driving the listener.
-- Its pages carry `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self' <the redirect URI's origin>; frame-ancestors 'none'`. The redirect URI's origin is listed so the browser follows the redirect after Approve.
+- A request whose `Host` header is not the host and port of `admin.base_url`, exactly as configured, gets HTTP 421. This keeps a page that rebinds its own name to the tailnet address from reading or driving the listener.
+- Its pages carry `Cache-Control: no-store`, `Referrer-Policy: same-origin`, and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self' <the redirect URI's origin>; frame-ancestors 'none'`. The redirect URI's origin is listed so the browser follows the redirect after Approve or Deny. `same-origin` keeps the `Origin` header on the page's own form POST, which `no-referrer` would turn into `null`, and sends no `Referer` to the client.
 - Every value a client supplied is HTML-escaped. Host names are shown in their ASCII (punycode) form, and control and bidirectional-formatting characters are removed from every shown value.
 
 ### Approval page
@@ -128,19 +132,22 @@ The Admin listener serves only `/authorize`. Every other path gets HTTP 404.
 
 1. Modgud resolves the client, by registration or, when `client_id` is an `https` URL, by its metadata document (below), and matches `redirect_uri` against the client's redirect URIs.
 2. It checks the rest: `response_type` is `code`; `code_challenge` is 43 characters of base64url and the method is `S256`; `scope` is absent or empty; and `resource`, when present, equals `<public.base_url>/<harness.service>/mcp`. An absent `resource` means that URI.
-3. Any failure in steps 1 or 2 shows an error page and never redirects, so the Approval page cannot send a person to a site the client chose without approval. An unknown `client_id` page tells the person to remove the connector from the client and add it again.
-4. Otherwise Modgud holds a pending request in memory for 10 minutes and shows the Approval page. It holds at most 50 pending requests and drops the oldest past that.
+3. A failure in step 1 shows an error page and never redirects. An unknown `client_id` page tells the person to remove the connector from the client and add it again.
+4. A failure in step 2 shows an error page that names the redirect URI's host and offers a "Return to <host>" link carrying the OAuth error (`unsupported_response_type`, `invalid_request`, `invalid_scope`, or `invalid_target`), `state`, and `iss`. It never redirects on its own, so the Admin listener's address cannot bounce a person to a site the client chose.
+5. Otherwise Modgud holds a pending request in memory for 10 minutes and shows the Approval page. It holds at most 50 pending requests and drops the oldest past that.
+
+Modgud creates a pending request, or fetches a metadata document, only for a top-level browser navigation: a request with `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`. Any other `GET /authorize` gets an error page, so a page elsewhere cannot fill the pending requests or spend the fetch budget with hidden requests.
 
 The Approval page leads with the host the code will be sent to, then shows the exact redirect URI, the Service, and the client's name, labeled as chosen by the client. For a metadata document it also shows the `client_id` URL's host, and warns when the redirect URI's host differs from it. A loopback redirect URI carries a warning that the code goes to a program on the approving device. The page has a field for the Pairing code and Approve and Deny buttons.
 
-The response sets a cookie named `__Host-modgud-pending` (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`) holding a random value bound to the pending request. The form carries the pending request's random identifier and nothing else from the request.
+The response sets a cookie for that pending request, named `__Host-modgud-pending-` followed by the first 8 characters of its identifier (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, no `Domain`, `Max-Age=600`), holding a random value bound to it. Several pending requests in different tabs do not overwrite each other's cookies. The form carries the pending request's random identifier and nothing else from the request.
 
 **Redirect matching.** A redirect URI matches by exact string comparison. The only exception is RFC 8252 loopback: an `http` redirect URI on `127.0.0.1`, `[::1]`, or `localhost` matches a registered one that differs only in its port.
 
 `POST /authorize` takes the pending request's identifier, the action, and, to approve, the Pairing code. Modgud refuses it with HTTP 403, without counting a failure, unless its `Origin` header equals `admin.base_url` and its cookie matches the pending request. An unknown or expired pending request shows an error page and does not count as a failure.
 
-- **Deny** ends the pending request and shows a page saying the connection was denied. It does not redirect.
-- **Approve with a valid code** spends the code, creates the authorization, issues an authorization code, and redirects with `code`, `state`, and `iss`. The pending request ends.
+- **Deny** ends the pending request and redirects with HTTP 303 to the redirect URI with `error=access_denied`, `state`, and `iss`. The person has just seen that host on the page.
+- **Approve with a valid code** spends the code, creates the authorization, and issues an authorization code in one transaction, then redirects with HTTP 303 to the redirect URI with `code`, `state`, and `iss`. The pending request ends. HTTP 303 makes the browser follow with a GET, so the form body never reaches the client.
 - **Approve with a wrong, expired, or spent code** shows the page again with an error. The fifth failure ends the pending request, and the person starts over from the client.
 - **Throttle.** After 20 failed codes in any 10 minutes, across all pending requests, the page refuses every code until that window has fewer than 20. A refused attempt neither checks the code nor counts as a failure.
 
@@ -168,8 +175,9 @@ An **authorization** is one approved connection: a client, the redirect URI it w
 
 - An authorization code is single-use and lasts 60 seconds.
 - An access token lasts 1 hour. Its audience is the authorization's resource, and Modgud refuses it at any other Service's path. An authorization keeps at most its 5 newest access tokens; an older one stops working.
-- An authorization has one current refresh token at a time, and it rotates on every use. Modgud remembers the authorization's 100 most recent rotated refresh tokens for replay detection. An older one is unknown.
-- Tokens, authorization codes, client identifiers, pending-request identifiers, and cookie values are 32 random bytes, base64url-encoded. Access tokens start with `mdg_at_` and refresh tokens with `mdg_rt_`, so secret scanners can find them.
+- An authorization has one current refresh token at a time, and it rotates on every use.
+- Tokens, authorization codes, client identifiers, pending-request identifiers, and cookie values are 32 random bytes, base64url-encoded. Access tokens start with `mdg_at_`, so secret scanners can find them.
+- A refresh token is `mdg_rt_<family>_<secret>`. The family is a random 32-byte identifier of its authorization that appears only in that authorization's refresh tokens, so only a holder of one of them can name it. Modgud stores the hashes of the current refresh token and of the one it replaced, nothing more.
 
 Every single-use step is atomic: spending a Pairing code, spending an authorization code, and rotating a refresh token each succeed for at most one request, even when requests race. A token is valid only while its authorization exists, so a token issued while `modgud revoke` runs does not survive it.
 
@@ -177,7 +185,7 @@ Every single-use step is atomic: spending a Pairing code, spending an authorizat
 
 Modgud keeps registrations, unspent Pairing codes, authorizations, authorization codes, and tokens in one SQLite database at `store.path`. Every Pairing code, authorization code, and token is stored only as its SHA-256 hash. Expired rows are deleted at least hourly. The server reads the store on every request, so a change that `modgud pair` or `modgud revoke` writes takes effect on the next request, without a restart. Everything in the store survives a restart; pending requests, which live in memory, do not.
 
-Whenever Modgud or a command opens the store, it creates the directory with mode 0700 and the file with mode 0600. When an existing file or directory is readable by group or others, Modgud narrows it to those modes and logs a warning.
+Whenever Modgud or a command opens the store, it sets the directory to mode 0700 and the file to mode 0600 before reading it, creating them when absent, and logs a warning when an existing mode was wider. When it cannot set them, it refuses to start.
 
 ## Logging
 
@@ -195,8 +203,10 @@ Both commands read the same configuration file as `modgud serve` and act on its 
 - The Admin listener checks that `admin.host` is a tailnet address by range. 100.64.0.0/10 is also carrier-grade NAT space, so on a host whose uplink uses it, a misconfigured `admin.host` could bind the uplink. The Approval page there still requires a Pairing code.
 - Browser-based MCP clients cannot connect, because Modgud serves no CORS headers.
 - A client that rejects a scopeless server, or always sends a nonempty `scope`, cannot connect.
+- An attacker with many source addresses can keep the overall registration limit full, which blocks dynamic registration. Clients that use a metadata document, as claude.ai and ChatGPT do when Modgud advertises it, are unaffected.
+- Any device on the tailnet can reach the Admin listener directly and trip the failed-code throttle, which pauses pairing for 10 minutes at a time.
 
 ## Open items for the end-to-end proof
 
 - Whether claude.ai and ChatGPT send `resource`. Modgud defaults it when absent.
-- Whether a client refreshes concurrently or retries a refresh more than 30 seconds after the original. Either would revoke the authorization, and the person would pair again.
+- Whether a client retries a refresh more than 30 seconds after the original, or races more than two refreshes. Either revokes the authorization, and the person pairs again.
