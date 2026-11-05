@@ -1,0 +1,13 @@
+{
+  "name": "modgud",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@loomcli/core": "0.16.0",
+    "@loomcli/plugins": "0.16.0"
+  },
+  "devDependencies": {
+    "@loomcli/loom": "0.16.0"
+  }
+}

@@ -4,3 +4,8 @@ dist/
 *.sqlite
 *.sqlite-*
 .env
+.atlas.toml
+coverage/
+.claude/settings.local.json
+CLAUDE.local.md
+.playwright-mcp/
