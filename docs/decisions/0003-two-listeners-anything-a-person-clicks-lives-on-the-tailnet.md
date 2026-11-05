@@ -37,5 +37,4 @@ Open item, Phase 1: the configured public base URL that the Public listener uses
 
 ## Changelog
 
-- 2026-11-05: Proposed. It becomes accepted as the Phase 1 code lands.
-- 2026-11-05: Revised while proposed. The identity-provider option keeps only its sourced reason, and TLS and the public base URL are recorded as open items.
+- 2026-11-05: Proposed. It becomes accepted as the code it governs lands.

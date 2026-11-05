@@ -16,10 +16,10 @@ Services are local stdio MCP tools, and a stdio server speaks to exactly one cli
 ## Decision
 
 - **One Child per Session.** Modgud spawns the Service's command on `initialize`. It stops the Child on session DELETE or when the Service's idle timeout expires. Notifications and server-to-client requests pass through within the Session.
-- **A Session is bound to the Grant that opened it.** Every request on a Session (POST, GET, DELETE, or a reconnect) carries a credential that is currently valid and derives from the same Grant that opened the Session. A request with no valid credential gets the 401 that [ADR-0001](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md) requires. A request whose credential derives from another Grant gets the same HTTP 404 as an unknown session id, so it learns nothing about the Session. Modgud never routes either request to the Child.
+- **A Session is bound to the Grant that opened it.** Every request on a Session (POST, GET, DELETE, or a reconnect) carries a credential that is currently valid and derives from the same Grant that opened the Session. A request with no valid credential gets the 401 that [ADR-0001](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md) requires. A credential for another Service is not valid here and gets that 401 too. A valid credential for this Service that derives from another Grant gets the same HTTP 404 as an unknown session id, so it learns nothing about the Session. Modgud never routes either request to the Child.
 - **A Grant's end ends its Sessions.** Revoking or expiring a Grant ends its Sessions and stops their Children at once, not at idle timeout.
 - **A Child that exits ends its Session.** When a Child exits on its own, its Session ends. Later requests on that session id get the MCP "session not found" response, HTTP 404.
-- **A Child's environment comes only from configuration.** Modgud builds it from the Service's configured environment plus a fixed allowlist of base variables copied from Modgud's environment, such as `PATH` and `HOME`; the exact list is set in Phase 1. Nothing else from Modgud's environment reaches the Child.
+- **A Child's environment comes from configuration and a fixed base.** Modgud builds it from the Service's configured environment plus a fixed allowlist of base variables copied from Modgud's environment, such as `PATH` and `HOME`; the exact list is set in Phase 1. A configured value overrides a base value. Nothing else from Modgud's environment reaches the Child.
 - **Only the Grant sets the Identity variable.** The environment variable that the Service's configuration names for Identity is reserved. Modgud removes any value for it from the configured environment and the base, then sets it only from the Grant. When the Grant has no Identity, the variable is absent. A Service without an Identity variable receives none.
 - **This is the contract Services build against.**
   - Trust comes from the channel: Modgud starts the Child and sets the Identity in its environment.
@@ -47,5 +47,4 @@ HTTP upstream Services, with the Identity in `_meta`, are a future extension and
 
 ## Changelog
 
-- 2026-11-05: Proposed. It becomes accepted as the Phase 1 code lands.
-- 2026-11-05: Revised while proposed. Each Session is bound to its Grant and ends with the Grant or the Child, the Child's environment comes only from configuration, and the trust statement names the OS account as its boundary.
+- 2026-11-05: Proposed. It becomes accepted as the code it governs lands.
