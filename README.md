@@ -35,7 +35,7 @@ allowed_origins = []  # default; a request with any other Origin header gets HTT
 # The HTTPS address of the Admin listener, served by a TLS-terminating proxy on
 # the tailnet. The OAuth Approval page is <base_url>/authorize.
 base_url = "https://modgud.example.ts.net"
-host = "100.64.0.1"   # a tailnet address: 100.64.0.0/10 or fd7a:115c:a1e0::/48
+host = "100.64.0.1"   # replace with this host's own tailnet address (in 100.64.0.0/10 or fd7a:115c:a1e0::/48)
 port = 8471           # default
 
 [store]

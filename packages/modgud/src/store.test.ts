@@ -309,7 +309,7 @@ describe('Pairing codes', async () => {
   });
 
   test('concurrent approvals from separate processes spend one code once', async () => {
-    const store = await open();
+    const store = await open({ now: Date.now });
     const { clientId } = register(store);
     const { code } = store.mintPairingCode(10);
 

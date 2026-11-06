@@ -151,7 +151,7 @@ A Pairing code is entered as eight characters from Crockford's base32 alphabet, 
 
 ### Client metadata documents
 
-A `client_id` that is an `https` URL names a Client ID Metadata Document. The URL must use port 443, have a path other than `/`, and have no userinfo, query, fragment, or `.` or `..` segment. Modgud compares it as a plain string.
+A `client_id` that is an `https` URL names a Client ID Metadata Document. The URL must use port 443, have a path other than `/`, and have no userinfo, query, fragment, or `.` or `..` segment. It must also be written the way a URL parser writes it, with a lowercase scheme and host and no explicit port, so `https://example.com:443/client.json` is refused. Modgud compares it as a plain string.
 
 Modgud fetches it only at `GET /authorize`, and fetches it safely:
 
@@ -199,7 +199,7 @@ Both commands read the same configuration file as `modgud serve` and act on its 
 - The Admin listener checks that `admin.host` is a tailnet address by range. 100.64.0.0/10 is also carrier-grade NAT space, so on a host whose uplink uses it, a misconfigured `admin.host` could bind the uplink. The Approval page there still requires a Pairing code.
 - Browser-based MCP clients cannot connect, because Modgud serves no CORS headers.
 - A client that rejects a scopeless server, or always sends a nonempty `scope`, cannot connect.
-- An attacker with many source addresses can keep the overall registration limit full, which blocks dynamic registration. Clients that use a metadata document, as claude.ai and ChatGPT do when Modgud advertises it, are unaffected.
+- An attacker with many source addresses can keep the overall registration limit full, which blocks dynamic registration. Connections that use a metadata document are unaffected. claude.ai and ChatGPT use one when Modgud advertises it, unless a connection is set up for dynamic registration.
 - Any device on the tailnet can reach the Admin listener directly and trip the failed-code throttle, which pauses pairing for 10 minutes at a time.
 - A page the approver opens can open a window and navigate it to `/authorize` repeatedly, which passes as top-level navigation. That can fill the pending requests and spend the metadata fetch budget while the page stays open.
 - A client that presents a refresh token it or another of its processes already used, as after a lost refresh response or two refreshes at once, revokes its own authorization, and the person pairs again.
