@@ -1,26 +1,93 @@
-import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 import { sha256Hex } from './bearer.ts';
 import { parseConfig } from './config.ts';
 import type { Log } from './log.ts';
+import { s256Challenge } from './pkce.ts';
 import { createPublicListener } from './public-listener.ts';
 import type { PublicListener } from './public-listener.ts';
+import { openStore } from './store.ts';
+import type { Store } from './store.ts';
 
 const TOKEN = 'harness-token';
 const STUB = `${import.meta.dir}/testing/stub-service.ts`;
+const PUBLIC = 'https://modgud.example.com';
+const RESOURCE = `${PUBLIC}/stub/mcp`;
+const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
+const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+const DAY = 24 * 60 * 60_000;
 
-type Running = { listener: PublicListener; lines: string[]; url: URL; stop: () => Promise<void> };
+type Running = {
+  listener: PublicListener;
+  lines: string[];
+  url: URL;
+  stop: () => Promise<void>;
+  store: Store;
+};
 const running: Running[] = [];
+const stores: Store[] = [];
+let directory = '';
+// The store's clock, which decides when an authorization expires.
+let clock = Date.now();
+
+beforeEach(async () => {
+  directory = await mkdtemp(join(tmpdir(), 'modgud-listener-'));
+  clock = Date.now();
+});
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map(async (instance) => instance.stop()));
+  for (const store of stores.splice(0)) {
+    store.close();
+  }
+  await rm(directory, { force: true, recursive: true });
 });
+
+// Opens a handle on the test's store, as the server or another process does.
+const openTestStore = async () => {
+  const store = await openStore({
+    maxTokenLifetimeDays: 30,
+    now: () => clock,
+    path: join(directory, 'modgud.sqlite'),
+    resource: RESOURCE,
+    warn: () => undefined,
+  });
+  stores.push(store);
+  return store;
+};
+
+// Approves a new client for the harness Service and exchanges its code, as a
+// chat client does through the Approval page and the token endpoint.
+const connectOAuthClient = (store: Store) => {
+  const clientId = store.registerClient({ redirectUris: [REDIRECT] })?.clientId ?? '';
+  const { code: pairingCode } = store.mintPairingCode(10);
+  const approved = store.approve({
+    clientId,
+    codeChallenge: s256Challenge(VERIFIER),
+    pairingCode,
+    redirectUri: REDIRECT,
+    requestedRedirectUri: null,
+  });
+  const result = store.exchangeAuthorizationCode({
+    clientId,
+    code: approved?.code ?? '',
+    codeVerifier: VERIFIER,
+  });
+  if (!result.ok) {
+    throw new Error(`The exchange failed: ${result.error}`);
+  }
+  return result.tokens;
+};
 
 // Serves the stub Service as `stub`, the harness's Service, and again as
 // `other`, on a free localhost port.
-const start = ({
+const start = async ({
+  authorizationSweepMs = undefined as number | undefined,
   identityEnv = undefined as string | undefined,
   idleMinutes = 30,
   initializeTimeoutMs = undefined as number | undefined,
@@ -28,8 +95,10 @@ const start = ({
   maxSessions = 16,
   origins = [] as string[],
   parentEnvironment = process.env,
+  storeCleanupMs = undefined as number | undefined,
   stubMode = '',
-} = {}): Running => {
+  wrapStore = (store: Store) => store,
+} = {}): Promise<Running> => {
   const stub = `
     command = ${JSON.stringify(process.execPath)}
     args = ${JSON.stringify([STUB, ...(marker === '' ? [] : [marker])])}
@@ -44,6 +113,11 @@ const start = ({
     [public]
     allowed_origins = ${JSON.stringify(origins)}
     max_sessions = ${String(maxSessions)}
+    base_url = "${PUBLIC}"
+
+    [admin]
+    base_url = "https://modgud.example.ts.net"
+    host = "100.64.0.1"
 
     [services.stub]
     ${stub}
@@ -54,11 +128,15 @@ const start = ({
   `);
   const lines: string[] = [];
   const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
+  const store = await openTestStore();
   const listener = createPublicListener({
     config,
     log,
     parentEnvironment,
+    store: wrapStore(store),
+    ...(authorizationSweepMs === undefined ? {} : { authorizationSweepMs }),
     ...(initializeTimeoutMs === undefined ? {} : { initializeTimeoutMs }),
+    ...(storeCleanupMs === undefined ? {} : { storeCleanupMs }),
   });
   const server = Bun.serve({
     fetch: listener.fetch,
@@ -73,6 +151,7 @@ const start = ({
       await listener.close();
       await server.stop(true);
     },
+    store,
     url: new URL('/stub/mcp', server.url),
   };
   running.push(instance);
@@ -159,7 +238,7 @@ const waitFor = async (condition: () => boolean | Promise<boolean>, timeoutMs = 
 
 describe('a Caller with the harness token', () => {
   test('lists and calls the Service tools, with definitions passed through unchanged', async () => {
-    const { url } = start();
+    const { url } = await start();
     const { client } = await connect(url);
 
     const { tools } = await client.listTools();
@@ -189,7 +268,7 @@ describe('a Caller with the harness token', () => {
   });
 
   test("passes the Child's progress notification to the call it belongs to", async () => {
-    const { url } = start();
+    const { url } = await start();
     const { client } = await connect(url);
     const progress: number[] = [];
 
@@ -203,7 +282,7 @@ describe('a Caller with the harness token', () => {
   });
 
   test("passes the Child's request to the Caller and the Caller's answer back", async () => {
-    const { url } = start();
+    const { url } = await start();
     const { client } = await connect(url);
 
     const result = await client.callTool({ arguments: {}, name: 'roots' });
@@ -212,7 +291,7 @@ describe('a Caller with the harness token', () => {
   });
 
   test('falls back to initialize when the Caller probes for a later protocol revision', async () => {
-    const { url } = start();
+    const { url } = await start();
     const { client } = await connect(url, { negotiation: 'auto' });
 
     const result = await client.callTool({ arguments: { text: 'fallback' }, name: 'echo' });
@@ -221,7 +300,7 @@ describe('a Caller with the harness token', () => {
   });
 
   test('gives each Session its own Child', async () => {
-    const { listener, url } = start();
+    const { listener, url } = await start();
     const first = await connect(url);
     const second = await connect(url);
 
@@ -239,7 +318,7 @@ describe('a Caller with the harness token', () => {
   });
 
   test("builds the Child's environment from the base variables and the Service's config only", async () => {
-    const { url } = start({
+    const { url } = await start({
       parentEnvironment: { ...process.env, MODGUD_SECRET: 'must-not-leak' },
     });
     const { client } = await connect(url);
@@ -269,7 +348,7 @@ describe('a Caller with the harness token', () => {
   });
 
   test("keeps Modgud's own value of the Identity variable from the Child", async () => {
-    const { url } = start({
+    const { url } = await start({
       identityEnv: 'USER',
       parentEnvironment: { ...process.env, USER: 'operator' },
     });
@@ -281,7 +360,7 @@ describe('a Caller with the harness token', () => {
   });
 
   test("logs the Child's stderr, tagged with its Service and Session", async () => {
-    const { lines, url } = start();
+    const { lines, url } = await start();
     const { transport } = await connect(url);
 
     await waitFor(() => lines.some((line) => line.includes('stderr: stub-service started')));
@@ -293,7 +372,7 @@ describe('a Caller with the harness token', () => {
 
 describe('logging', () => {
   test('a Child response id with a newline stays on one log line', async () => {
-    const { lines, url } = start();
+    const { lines, url } = await start();
     const { client } = await connect(url);
 
     await client.callTool({ arguments: {}, name: 'unmatched-response' });
@@ -309,7 +388,7 @@ describe('a Child that closes its stdin', () => {
     const record = (reason: unknown) => unhandled.push(reason);
     process.on('unhandledRejection', record);
     try {
-      const { lines, url } = start();
+      const { lines, url } = await start();
       const { client } = await connect(url);
       await client.callTool({ arguments: {}, name: 'close-stdin' });
       await Bun.sleep(100);
@@ -337,7 +416,7 @@ describe('a Child that closes its stdin', () => {
 
 describe('ending a Session', () => {
   test('DELETE ends the Session, and later requests on it get 404', async () => {
-    const { listener, url } = start();
+    const { listener, url } = await start();
     const { client, transport } = await connect(url);
     const sessionId = transport.sessionId ?? '';
 
@@ -353,7 +432,7 @@ describe('ending a Session', () => {
   });
 
   test('a Child that exits ends its Session, and later requests on it get 404', async () => {
-    const { lines, listener, url } = start();
+    const { lines, listener, url } = await start();
     const { client, transport } = await connect(url);
 
     await client.callTool({ arguments: {}, name: 'exit' });
@@ -368,7 +447,7 @@ describe('ending a Session', () => {
   });
 
   test('an idle Session is ended after its timeout', async () => {
-    const { lines, listener, url } = start({ idleMinutes: 0.005 });
+    const { lines, listener, url } = await start({ idleMinutes: 0.005 });
     await connect(url);
 
     await waitFor(() => listener.sessionCount() === 0);
@@ -376,7 +455,7 @@ describe('ending a Session', () => {
   });
 
   test('a cancelled call the Child never answers does not keep its Session past the idle timeout', async () => {
-    const { lines, listener, url } = start({ idleMinutes: 0.005 });
+    const { lines, listener, url } = await start({ idleMinutes: 0.005 });
     const { client } = await connect(url);
 
     let cancelled = false;
@@ -392,7 +471,7 @@ describe('ending a Session', () => {
   });
 
   test('an uncancelled call the Child never answers does not keep its Session past the idle timeout', async () => {
-    const { lines, listener, url } = start({ idleMinutes: 0.005 });
+    const { lines, listener, url } = await start({ idleMinutes: 0.005 });
     const { client } = await connect(url);
     const abandon = new AbortController();
     const call = (async () => {
@@ -410,7 +489,7 @@ describe('ending a Session', () => {
   });
 
   test("after the Caller cancels one call, the Child's notification without a progress token reaches the other call in flight", async () => {
-    const { lines, url } = start();
+    const { lines, url } = await start();
     const { transport } = await connect(url);
     const headers = {
       Authorization: `Bearer ${TOKEN}`,
@@ -460,7 +539,11 @@ describe('ending a Session', () => {
 
   test('a Child that never answers initialize is ended within the bound', async () => {
     const marker = `marker-${crypto.randomUUID()}`;
-    const { lines, listener, url } = start({ initializeTimeoutMs: 200, marker, stubMode: 'mute' });
+    const { lines, listener, url } = await start({
+      initializeTimeoutMs: 200,
+      marker,
+      stubMode: 'mute',
+    });
 
     const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
     await response.body?.cancel();
@@ -471,7 +554,7 @@ describe('ending a Session', () => {
   });
 
   test('a Child message over the size limit ends its Session instead of wedging it', async () => {
-    const { lines, listener, url } = start();
+    const { lines, listener, url } = await start();
     const { client } = await connect(url);
 
     // The SDK client waits out its own timeout once the Session is gone.
@@ -489,7 +572,7 @@ describe('ending a Session', () => {
   });
 
   test('an initialize after close gets 503 and starts no Child', async () => {
-    const { listener, url } = start();
+    const { listener, url } = await start();
     await listener.close();
     const spawn = spyOn(Bun, 'spawn');
 
@@ -531,7 +614,7 @@ describe('ending a Session', () => {
     };
 
     try {
-      const instance = start({ parentEnvironment });
+      const instance = await start({ parentEnvironment });
       race.listener = instance.listener;
       const { lines, url } = instance;
 
@@ -550,7 +633,7 @@ describe('ending a Session', () => {
   });
 
   test('close does not resolve until the Child of a Session already ending has stopped', async () => {
-    const { listener, url } = start({ idleMinutes: 0.005, stubMode: 'ignore-sigterm' });
+    const { listener, url } = await start({ idleMinutes: 0.005, stubMode: 'ignore-sigterm' });
     const { client } = await connect(url);
     const pid = Number(firstText(await client.callTool({ arguments: {}, name: 'pid' })));
     await waitFor(() => listener.sessionCount() === 0);
@@ -563,20 +646,28 @@ describe('ending a Session', () => {
 });
 
 describe('refusals', () => {
-  test('a request without the token gets 401 with a Bearer challenge', async () => {
-    const { listener, url } = start();
+  test("a request without a token gets 401 naming the Service's protected-resource metadata", async () => {
+    const { listener, url } = await start();
 
     const response = await post(url, {});
 
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toBe('Bearer');
+    expect(response.headers.get('www-authenticate')).toBe(
+      `Bearer resource_metadata="${PUBLIC}/.well-known/oauth-protected-resource/stub/mcp"`,
+    );
+    expect(response.headers.get('cache-control')).toBe('no-store');
     expect(listener.sessionCount()).toBe(0);
   });
 
-  test('a request with a wrong token gets 401', async () => {
-    const { url } = start();
+  test('a request with a wrong token gets 401 with invalid_token', async () => {
+    const { url } = await start();
 
-    expect((await post(url, { Authorization: 'Bearer wrong' })).status).toBe(401);
+    const response = await post(url, { Authorization: 'Bearer wrong' });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBe(
+      `Bearer resource_metadata="${PUBLIC}/.well-known/oauth-protected-resource/stub/mcp", error="invalid_token"`,
+    );
     let refused = false;
     try {
       await connect(url, { token: 'wrong' });
@@ -587,7 +678,7 @@ describe('refusals', () => {
   });
 
   test('an unknown session id gets 404', async () => {
-    const { url } = start();
+    const { url } = await start();
 
     const response = await post(url, {
       Authorization: `Bearer ${TOKEN}`,
@@ -598,7 +689,7 @@ describe('refusals', () => {
   });
 
   test('an unknown Service path gets 404', async () => {
-    const { url } = start();
+    const { url } = await start();
 
     const response = await post(new URL('/missing/mcp', url), {
       Authorization: `Bearer ${TOKEN}`,
@@ -607,17 +698,20 @@ describe('refusals', () => {
     expect(response.status).toBe(404);
   });
 
-  test("the harness token gets 401 at another Service's path", async () => {
-    const { listener, url } = start();
+  test("the harness token gets 401 with invalid_token at another Service's path", async () => {
+    const { listener, url } = await start();
 
     const response = await post(new URL('/other/mcp', url), { Authorization: `Bearer ${TOKEN}` });
 
     expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBe(
+      `Bearer resource_metadata="${PUBLIC}/.well-known/oauth-protected-resource/other/mcp", error="invalid_token"`,
+    );
     expect(listener.sessionCount()).toBe(0);
   });
 
   test('a foreign Origin gets 403, and an allowed one passes', async () => {
-    const { url } = start({ origins: ['https://claude.ai'] });
+    const { url } = await start({ origins: ['https://claude.ai'] });
 
     const foreign = await post(url, {
       Authorization: `Bearer ${TOKEN}`,
@@ -633,7 +727,7 @@ describe('refusals', () => {
   });
 
   test('a request other than initialize without a session id gets 400 and starts no Child', async () => {
-    const { listener, url } = start();
+    const { listener, url } = await start();
 
     const response = await post(
       url,
@@ -646,11 +740,201 @@ describe('refusals', () => {
   });
 
   test('a new Session past the maximum gets 503', async () => {
-    const { url } = start({ maxSessions: 1 });
+    const { url } = await start({ maxSessions: 1 });
     await connect(url);
 
     const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
 
     expect(response.status).toBe(503);
+  });
+});
+
+describe('a Caller with an OAuth access token', () => {
+  test('lists and calls the Service tools, and its responses are not stored', async () => {
+    const { store, url } = await start();
+    const { accessToken } = connectOAuthClient(store);
+    const { client } = await connect(url, { token: accessToken });
+
+    const result = await client.callTool({ arguments: { text: 'oauth' }, name: 'echo' });
+    const initialize = await post(url, { Authorization: `Bearer ${accessToken}` });
+
+    expect(firstText(result)).toBe('oauth');
+    expect(initialize.status).toBe(200);
+    expect(initialize.headers.get('cache-control')).toBe('no-store');
+    await initialize.body?.cancel();
+  });
+
+  test("gets 401 with invalid_token at another Service's path", async () => {
+    const { listener, store, url } = await start();
+    const { accessToken } = connectOAuthClient(store);
+
+    const response = await post(new URL('/other/mcp', url), {
+      Authorization: `Bearer ${accessToken}`,
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBe(
+      `Bearer resource_metadata="${PUBLIC}/.well-known/oauth-protected-resource/other/mcp", error="invalid_token"`,
+    );
+    expect(listener.sessionCount()).toBe(0);
+  });
+
+  test('gets 401 with invalid_token once its authorization is revoked', async () => {
+    const { store, url } = await start();
+    const { accessToken } = connectOAuthClient(store);
+    store.revokeAll();
+
+    const response = await post(url, { Authorization: `Bearer ${accessToken}` });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toContain('error="invalid_token"');
+  });
+});
+
+// A tools/list request on the Session, with the given credential.
+const listOn = (url: URL, sessionId: string, protocolVersion: string, token: string) =>
+  post(
+    url,
+    {
+      Authorization: `Bearer ${token}`,
+      'Mcp-Protocol-Version': protocolVersion,
+      'Mcp-Session-Id': sessionId,
+    },
+    JSON.stringify({ id: 2, jsonrpc: '2.0', method: 'tools/list' }),
+  );
+
+describe('a Session bound to its credential source', () => {
+  test("gets 404 for another authorization's valid token and for the static token", async () => {
+    const { store, url } = await start();
+    const owner = connectOAuthClient(store);
+    const other = connectOAuthClient(store);
+    const { transport } = await connect(url, { token: owner.accessToken });
+    const sessionId = transport.sessionId ?? '';
+    const version = transport.protocolVersion ?? '';
+
+    const otherAuthorization = await listOn(url, sessionId, version, other.accessToken);
+    const staticToken = await listOn(url, sessionId, version, TOKEN);
+    const sameAuthorization = await listOn(url, sessionId, version, owner.accessToken);
+
+    expect(otherAuthorization.status).toBe(404);
+    expect(staticToken.status).toBe(404);
+    expect(sameAuthorization.status).toBe(200);
+    await sameAuthorization.body?.cancel();
+  });
+
+  test('a static-token Session gets 404 for a valid OAuth access token', async () => {
+    const { store, url } = await start();
+    const { accessToken } = connectOAuthClient(store);
+    const { transport } = await connect(url);
+
+    const response = await listOn(
+      url,
+      transport.sessionId ?? '',
+      transport.protocolVersion ?? '',
+      accessToken,
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  test('accepts a newer access token of the same authorization after a refresh', async () => {
+    const { store, url } = await start();
+    const { accessToken, refreshToken } = connectOAuthClient(store);
+    const { transport } = await connect(url, { token: accessToken });
+    const clientId = store.verifyAccessToken(accessToken)?.clientId ?? '';
+    const refreshed = store.refresh({ clientId, refreshToken });
+    const newer = refreshed.ok ? refreshed.tokens.accessToken : '';
+
+    const response = await listOn(
+      url,
+      transport.sessionId ?? '',
+      transport.protocolVersion ?? '',
+      newer,
+    );
+
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+  });
+});
+
+describe('ending the Sessions of an authorization', () => {
+  test('modgud revoke from another store handle ends its Sessions, streams, and Children within 10 seconds', async () => {
+    const { lines, listener, store, url } = await start();
+    const { accessToken } = connectOAuthClient(store);
+    const staticSession = await connect(url);
+    // A raw Session, so the test holds its only GET stream.
+    const auth = { Authorization: `Bearer ${accessToken}` };
+    const opened = await post(url, auth);
+    const session = { ...auth, 'Mcp-Session-Id': opened.headers.get('mcp-session-id') ?? '' };
+    await opened.text();
+    const initialized = await post(
+      url,
+      session,
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    );
+    expect(initialized.status).toBe(202);
+    const pidCall = await post(
+      url,
+      session,
+      JSON.stringify({ id: 2, jsonrpc: '2.0', method: 'tools/call', params: { name: 'pid' } }),
+    );
+    const pid = Number(/"text":"(\d+)"/u.exec(await pidCall.text())?.[1]);
+    // Bun sends an event stream's headers with its first event, and this
+    // stream carries none, so its response arrives only once it closes.
+    const stream = fetch(url, { headers: { Accept: 'text/event-stream', ...session } });
+    await Bun.sleep(200);
+    expect(listener.sessionCount()).toBe(2);
+    expect(isAlive(pid)).toBe(true);
+
+    const revokedAt = Date.now();
+    const otherProcess = await openTestStore();
+    expect(otherProcess.revokeAll()).toBe(1);
+
+    await waitFor(() => listener.sessionCount() === 1, 10_000);
+    expect(Date.now() - revokedAt).toBeLessThan(10_000);
+    const closed = await stream;
+    expect(closed.status).toBe(200);
+    expect(await closed.text()).toBe('');
+    await waitFor(() => !isAlive(pid));
+    expect(lines.some((line) => line.endsWith('ended: authorization ended.'))).toBe(true);
+    const staticResult = await staticSession.client.callTool({
+      arguments: { text: 'still here' },
+      name: 'echo',
+    });
+    expect(firstText(staticResult)).toBe('still here');
+  }, 15_000);
+
+  test('an expired authorization ends its Sessions', async () => {
+    const { listener, store, url } = await start({ authorizationSweepMs: 20 });
+    const { accessToken } = connectOAuthClient(store);
+    await connect(url, { token: accessToken });
+    await Bun.sleep(100);
+    expect(listener.sessionCount()).toBe(1);
+
+    clock += 30 * DAY;
+
+    await waitFor(() => listener.sessionCount() === 0);
+  });
+});
+
+describe('store maintenance', () => {
+  test('deletes expired rows on its interval, and stops once the listener closes', async () => {
+    let cleanups = 0;
+    const { listener } = await start({
+      storeCleanupMs: 10,
+      wrapStore: (store) => ({
+        ...store,
+        removeExpired: () => {
+          cleanups += 1;
+        },
+      }),
+    });
+
+    await waitFor(() => cleanups >= 2);
+    await listener.close();
+    const afterClose = cleanups;
+    await Bun.sleep(50);
+
+    expect(cleanups).toBe(afterClose);
   });
 });

@@ -15,6 +15,7 @@ import { loggable } from './log.ts';
 import type { Log } from './log.ts';
 
 export type SessionEndReason =
+  | 'authorization ended'
   | 'child exited'
   | 'child protocol error'
   | 'deleted'

@@ -2,9 +2,9 @@
 type: adr
 title: ADR-0003 - Two listeners split the public surface from everything a person clicks
 description: "The Public listener binds localhost behind cloudflared and serves only the MCP endpoints and the OAuth endpoints chat-client servers call. The Admin listener binds the tailnet only and serves the Approval page, the admin API, and the admin panel."
-status: proposed
+status: accepted
 created: 2026-11-05
-modified: 2026-11-05
+modified: 2026-11-06
 ---
 
 # Two listeners split the public surface from everything a person clicks
@@ -18,7 +18,8 @@ Anthropic's tunnel OAuth documentation publishes an example with `authorization_
 ## Decision
 
 - **Public listener.** It binds localhost and is reached only by cloudflared. It serves `/<service>/mcp` (Streamable HTTP), OAuth protected-resource and authorization-server metadata, client registration (DCR), and the token endpoint.
-- **Admin listener.** It binds the tailnet interface only. It serves the OAuth `authorization_endpoint` (the Approval page, where the Pairing code is entered), the admin API, and the admin panel.
+- **Admin listener.** It binds a tailnet address only, and Modgud refuses to start it on any other address. It serves the OAuth `authorization_endpoint` (the Approval page, where the Pairing code is entered), the admin API, and the admin panel. It speaks plain HTTP: a TLS-terminating proxy on the tailnet, which may run on another tailnet host, serves it at `admin.base_url`, passes the `Host` header through, and forwards over the tailnet. The Admin listener refuses a request for any other host, so a page that rebinds its own name to the tailnet address cannot drive it.
+- **Each listener knows its public address from configuration.** Both listeners see plain HTTP from the proxy in front of them, so `public.base_url` sets the `issuer`, the resource URIs, and the metadata URLs, and `admin.base_url` sets the `authorization_endpoint`. Modgud never builds these from a request's `Host` header.
 - **Principle: anything a person clicks lives on the tailnet.** The Public listener serves only what chat-client servers call and cannot reach the Admin listener's routes. Approving a connection requires being on the tailnet.
 
 ## Considered options
@@ -32,9 +33,9 @@ An approver must be on the tailnet to pair a chat client. Pairing from a phone o
 The split depends on chat clients loading the approval URL in the person's browser. If either claude.ai or ChatGPT rejects the split-host Approval page, the design changes before any Grant work exists, so Phase 1 tests this first.
 The admin API and panel also need their own authentication on the tailnet, settled in Phase 2: a Tailscale `whois` allowlist for the panel and an admin token for the CLI. The CLI reads the admin URL from configuration, so an agent on any tailnet host can manage Grants.
 The panel's pages (Grants, pairing, live Sessions, the audit log) arrive in Phase 4.
-Open item, Phase 1: how the Admin listener gets TLS for the authorization endpoint, from `tailscale cert`, Tailscale Serve, or a private CA.
-Open item, Phase 1: the configured public base URL that the Public listener uses for `issuer`, resource URIs, and metadata, because it sees plain HTTP from cloudflared.
+The Admin listener's TLS depends on the proxy in front of it, and the hop from that proxy to Modgud is protected by the tailnet's own encryption.
 
 ## Changelog
 
 - 2026-11-05: Proposed. It becomes accepted as the code it governs lands.
+- 2026-11-06: Addendum and accepted. The listener split landed with the Approval page, the Admin listener's first route; the admin API and panel arrive under this decision later. The Admin listener binds a tailnet address behind a TLS-terminating proxy on the tailnet, and both listeners take their public addresses from configuration.

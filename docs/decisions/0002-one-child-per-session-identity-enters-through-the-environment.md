@@ -53,3 +53,4 @@ HTTP upstream Services, with the Identity in `_meta`, are a future extension and
 
 - 2026-11-05: Proposed. It becomes accepted as the code it governs lands.
 - 2026-11-05: Addendum. Settled the base environment allowlist, the Session limits, and how messages from a Child reach the Caller request they belong to, as the Phase 1 code landed. Recorded that the decision assumes the 2025-era session handshake. It stays proposed until the Child model for MCP revision 2026-07-28 is settled.
+- 2026-11-06: Addendum. A revocation made by another process, such as `modgud revoke`, reaches the server through the store, so "at once" means within 10 seconds for those Sessions.

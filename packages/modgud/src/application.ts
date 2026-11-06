@@ -3,6 +3,8 @@ import { help } from '@loomcli/plugins/help';
 import { version } from '@loomcli/plugins/version';
 
 import packageJson from '../package.json' with { type: 'json' };
+import { pair } from './pair.ts';
+import { revoke } from './revoke.ts';
 import { serve } from './serve.ts';
 
 // SIGTERM from systemd and SIGINT from a terminal cancel `serve`, and it gets
@@ -14,4 +16,7 @@ export const app = new Application('modgud', {
   plugins: [help(), version()],
   shutdown,
   version: packageJson.version,
-}).command(serve);
+})
+  .command(serve)
+  .command(pair)
+  .command(revoke);
