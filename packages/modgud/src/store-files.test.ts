@@ -36,6 +36,15 @@ const rejectionOf = async (promise: Promise<unknown>) => {
   throw new Error('The promise resolved.');
 };
 
+const exists = async (path: string) => {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const modeOf = async (path: string) => (await stat(path)).mode & 0o777;
 
 const collect = () => {
@@ -115,6 +124,19 @@ describe('secureStoreFiles', async () => {
     await secureStoreFiles(path, warn);
 
     expect(warnings).toEqual([]);
+  });
+
+  test('refuses a store path that is a symbolic link, naming it, without creating its target', async () => {
+    const directory = await scratch();
+    const path = join(directory, 'modgud.sqlite');
+    const target = join(directory, 'elsewhere.sqlite');
+    await symlink(target, path);
+
+    const message = await rejectionOf(secureStoreFiles(path, collect().warn));
+
+    expect(message).toContain(path);
+    expect(message).toContain('symbolic link');
+    expect(await exists(target)).toBe(false);
   });
 
   test.skipIf(process.getuid?.() === 0)('refuses a file whose mode it cannot narrow', async () => {

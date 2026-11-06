@@ -3,11 +3,13 @@ import { networkInterfaces } from 'node:os';
 
 import { clientLabel, isClientIdMetadataUrl, parseMetadataDocument } from './client-metadata.ts';
 import type { ClientMetadata } from './client-metadata.ts';
+import { readLimitedBody } from './http.ts';
 import { isPublicUnicastAddress } from './ip-address.ts';
 import { loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { pinnedHttpsConnect } from './pinned-https.ts';
 import { createWindowLimit } from './rate-limit.ts';
+import { unbracketed } from './uri.ts';
 
 // Fetches Client ID Metadata Documents safely (docs/oauth.md, "Client
 // metadata documents"): only from public unicast addresses that are not the
@@ -76,16 +78,11 @@ class FetchFailureError extends Error {
 
 // The body as text, failing once it passes the limit.
 const readLimited = async (body: AsyncIterable<Uint8Array>) => {
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for await (const chunk of body) {
-    size += chunk.byteLength;
-    if (size > BODY_LIMIT) {
-      throw new FetchFailureError(`the document is larger than ${String(BODY_LIMIT)} bytes`);
-    }
-    chunks.push(chunk);
+  const text = await readLimitedBody(body, BODY_LIMIT);
+  if (text === undefined) {
+    throw new FetchFailureError(`the document is larger than ${String(BODY_LIMIT)} bytes`);
   }
-  return new TextDecoder().decode(Buffer.concat(chunks));
+  return text;
 };
 
 // Settles with the task, or fails once `timeoutMs` passes. Either way it
@@ -128,8 +125,7 @@ export const createMetadataDocumentFetcher = ({
   const budget = createWindowLimit({ limit: FETCHES_PER_MINUTE, now, windowMs: MINUTE });
 
   const download = async (url: URL, signal: AbortSignal) => {
-    const hostname = url.hostname.replace(/^\[(.*)\]$/u, '$1');
-    const addresses = await resolve(hostname);
+    const addresses = await resolve(unbracketed(url.hostname));
     const own = interfaceAddresses();
     const [first] = addresses;
     if (first === undefined) {

@@ -89,7 +89,7 @@ afterEach(async () => {
 });
 
 const register = (redirectUris = [REDIRECT], clientName: string | undefined = 'Claude') =>
-  store.registerClient({ clientName, redirectUris }).clientId;
+  store.registerClient({ clientName, redirectUris })?.clientId ?? '';
 
 const authorizeQuery = (clientId: string, overrides: Record<string, string | undefined> = {}) => {
   const parameters: Record<string, string | undefined> = {
@@ -252,6 +252,17 @@ describe('the Approval page', () => {
 
     expect(response.headers.get('content-security-policy')).toBe(
       "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+    );
+  });
+
+  test('names no extra form action for a stored redirect origin with characters outside a host name', async () => {
+    const injected = 'https://evil.example;sandbox,script-src/cb';
+    const { response } = await openApproval(
+      authorizeQuery(register([injected]), { redirect_uri: injected }),
+    );
+
+    expect(response.headers.get('content-security-policy')).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
     );
   });
 
@@ -459,7 +470,6 @@ describe('a request that resolves but is otherwise invalid', () => {
     ],
     ['the plain method', { code_challenge_method: 'plain' }, 'invalid_request'],
     ['no method', { code_challenge_method: undefined }, 'invalid_request'],
-    ['a state over 1,024 characters', { state: 's'.repeat(1025) }, 'invalid_request'],
     ['a scope', { scope: 'mcp' }, 'invalid_scope'],
     ['another resource', { resource: `${PUBLIC}/other/mcp` }, 'invalid_target'],
   ])(
@@ -479,11 +489,24 @@ describe('a request that resolves but is otherwise invalid', () => {
       expect(`${link.origin}${link.pathname}`).toBe(REDIRECT);
       expect(link.searchParams.get('error')).toBe(error);
       expect(link.searchParams.get('iss')).toBe(PUBLIC);
-      expect(link.searchParams.get('state')).toBe(
-        'state' in overrides ? overrides.state : 'state-123',
-      );
+      expect(link.searchParams.get('state')).toBe('state-123');
     },
   );
+
+  test('with a state over 1,024 characters leaves the state out of the Return link', async () => {
+    const response = await get(authorizeQuery(register(), { state: 's'.repeat(1025) }));
+
+    expect(response.status).toBe(400);
+    const html = await response.text();
+    expect(html).not.toContain('s'.repeat(1025));
+    const href = /<a href="([^"]+)">Return to claude\.ai<\/a>/u
+      .exec(html)?.[1]
+      ?.replaceAll('&amp;', '&');
+    const link = new URL(href ?? '');
+    expect(link.searchParams.get('error')).toBe('invalid_request');
+    expect(link.searchParams.get('iss')).toBe(PUBLIC);
+    expect(link.searchParams.has('state')).toBe(false);
+  });
 
   test('accepts a state of 1,024 characters', async () => {
     expect((await get(authorizeQuery(register(), { state: 's'.repeat(1024) }))).status).toBe(200);
@@ -559,6 +582,10 @@ describe('POST /authorize', () => {
     [
       'a cookie with the wrong value',
       ({ approval }: Cookies) => `${approval.split('=')[0] ?? ''}=${'x'.repeat(43)}`,
+    ],
+    [
+      'a cookie of the same length with a character that UTF-8 writes in two bytes',
+      ({ approval }: Cookies) => `${approval.split('=')[0] ?? ''}=${'\u00e9'.repeat(43)}`,
     ],
     ['another pending request cookie', ({ other }: Cookies) => other],
   ])('answers HTTP 403 with %s, without counting a failure', async (_, cookieFor) => {
@@ -744,6 +771,30 @@ describe('POST /authorize', () => {
     const response = await approveWith(approval, store.mintPairingCode(10).code);
     expect(response.status).toBe(400);
     expect(await response.text()).toContain('Remove the connector');
+  });
+});
+
+describe('an unexpected error', () => {
+  test('answers a plain HTTP 500 and logs the error without its stack', async () => {
+    const failing: Store = {
+      ...store,
+      findClient: () => {
+        throw new Error('disk I/O error');
+      },
+    };
+    const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
+    const broken = createAdminListener({ config, fetchMetadataDocument, log, store: failing });
+
+    const response = await broken.fetch(
+      new Request(`${ADMIN}/authorize?${authorizeQuery('some-client')}`, { headers: BROWSER }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.text()).toBe('Internal Server Error');
+    expect(lines).toEqual(['Answered GET /authorize with HTTP 500: disk I/O error']);
+    broken.close();
   });
 });
 

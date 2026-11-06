@@ -1,3 +1,4 @@
+import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -48,12 +49,21 @@ const open = async (options: Partial<StoreOptions> = {}) => {
   return store;
 };
 
+// Registers a client, failing the test when the store refuses it.
+const register = (store: Store) => {
+  const client = store.registerClient({ redirectUris: [REDIRECT] });
+  if (client === undefined) {
+    throw new Error('The registration was refused.');
+  }
+  return client;
+};
+
 // Registers a client, mints a Pairing code, and approves the client with it.
 const approveClient = (
   store: Store,
   { requestedRedirectUri = REDIRECT }: { requestedRedirectUri?: string | null } = {},
 ) => {
-  const { clientId } = store.registerClient({ redirectUris: [REDIRECT] });
+  const { clientId } = register(store);
   const { code: pairingCode } = store.mintPairingCode(10);
   const approved = store.approve({
     clientId,
@@ -83,6 +93,28 @@ const connectClient = (store: Store) => {
   return { ...approved, ...result.tokens };
 };
 
+// Runs testing/store-race.ts in `racers` processes at once against the
+// store, all starting the operation in the same millisecond, and returns what
+// each printed.
+const race = async (racers: number, operation: string[]) => {
+  const startAt = String(Date.now() + 500);
+  const processes = Array.from({ length: racers }, () =>
+    Bun.spawn(
+      [
+        process.execPath,
+        `${import.meta.dir}/testing/store-race.ts`,
+        join(directory, 'modgud.sqlite'),
+        startAt,
+        ...operation,
+      ],
+      { stderr: 'inherit', stdout: 'pipe' },
+    ),
+  );
+  return Promise.all(
+    processes.map(async (racer) => (await new Response(racer.stdout).text()).trim()),
+  );
+};
+
 // An approval of the client with the Pairing code, for the redirect URI it requested.
 const approval = (clientId: string, pairingCode: string) => ({
   clientId,
@@ -97,6 +129,9 @@ describe('client registrations', async () => {
     const store = await open();
 
     const client = store.registerClient({ clientName: 'Claude', redirectUris: [REDIRECT] });
+    if (client === undefined) {
+      throw new Error('The registration was refused.');
+    }
 
     expect(client.clientId).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect(client.clientIdIssuedAt).toBe(START / SECOND);
@@ -106,7 +141,7 @@ describe('client registrations', async () => {
 
   test('leaves out an absent client name', async () => {
     const store = await open();
-    const client = store.registerClient({ redirectUris: [REDIRECT] });
+    const client = register(store);
     expect(store.findClient(client.clientId)).toEqual({
       clientId: client.clientId,
       clientIdIssuedAt: START / SECOND,
@@ -116,7 +151,7 @@ describe('client registrations', async () => {
 
   test('forgets a registration never approved after 1 hour', async () => {
     const store = await open();
-    const client = store.registerClient({ redirectUris: [REDIRECT] });
+    const client = register(store);
 
     clock += HOUR - 1;
     expect(store.findClient(client.clientId)).toBeDefined();
@@ -140,20 +175,70 @@ describe('client registrations', async () => {
   test('past 500 registrations, evicts the oldest one never approved', async () => {
     const store = await open();
     const { clientId: approved } = approveClient(store);
-    const first = store.registerClient({ redirectUris: [REDIRECT] });
+    const first = register(store);
     clock += 1;
-    const second = store.registerClient({ redirectUris: [REDIRECT] });
+    const second = register(store);
     for (let index = 0; index < 497; index += 1) {
-      store.registerClient({ redirectUris: [REDIRECT] });
+      register(store);
     }
     expect(store.findClient(first.clientId)).toBeDefined();
 
-    const newest = store.registerClient({ redirectUris: [REDIRECT] });
+    const newest = register(store);
 
     expect(store.findClient(first.clientId)).toBeUndefined();
     expect(store.findClient(second.clientId)).toBeDefined();
     expect(store.findClient(approved)).toBeDefined();
     expect(store.findClient(newest.clientId)).toBeDefined();
+  });
+
+  test('past the cap, evicts a registration with no live authorization, never-approved ones first', async () => {
+    const store = await open({ storedClients: 3 });
+    const revoked = approveClient(store);
+    store.revokeAll();
+    clock += 1;
+    const live = approveClient(store);
+    clock += 1;
+    const neverApproved = register(store);
+    clock += 1;
+
+    const fourth = register(store);
+
+    expect(store.findClient(neverApproved.clientId)).toBeUndefined();
+    expect(store.findClient(revoked.clientId)).toBeDefined();
+    expect(store.approve(approval(fourth.clientId, store.mintPairingCode(10).code))).toBeDefined();
+
+    const fifth = register(store);
+
+    expect(store.findClient(revoked.clientId)).toBeUndefined();
+    expect(store.findClient(live.clientId)).toBeDefined();
+    expect(store.findClient(fourth.clientId)).toBeDefined();
+    expect(store.findClient(fifth.clientId)).toBeDefined();
+  });
+
+  test('past the cap, evicts an approved registration whose authorization expired', async () => {
+    const store = await open({ maxTokenLifetimeDays: 1, storedClients: 2 });
+    const expired = approveClient(store);
+    clock += DAY;
+    const live = approveClient(store);
+
+    const newest = register(store);
+
+    expect(store.findClient(expired.clientId)).toBeUndefined();
+    expect(store.findClient(live.clientId)).toBeDefined();
+    expect(store.findClient(newest.clientId)).toBeDefined();
+  });
+
+  test('stores nothing when every stored registration has a live authorization', async () => {
+    const store = await open({ storedClients: 2 });
+    const first = approveClient(store);
+    const second = approveClient(store);
+
+    expect(store.registerClient({ redirectUris: [REDIRECT] })).toBeUndefined();
+
+    expect(store.findClient(first.clientId)).toBeDefined();
+    expect(store.findClient(second.clientId)).toBeDefined();
+    store.revokeAll();
+    expect(store.registerClient({ redirectUris: [REDIRECT] })).toBeDefined();
   });
 });
 
@@ -169,7 +254,7 @@ describe('Pairing codes', async () => {
 
   test('approves with the code however it was typed', async () => {
     const store = await open();
-    const { clientId } = store.registerClient({ redirectUris: [REDIRECT] });
+    const { clientId } = register(store);
     const { code } = store.mintPairingCode(10);
     const typed = code.toLowerCase().replace('-', ' ').replaceAll('0', 'o').replaceAll('1', 'l');
 
@@ -187,7 +272,7 @@ describe('Pairing codes', async () => {
 
   test('approves exactly one authorization per code', async () => {
     const store = await open();
-    const { clientId } = store.registerClient({ redirectUris: [REDIRECT] });
+    const { clientId } = register(store);
     const { code } = store.mintPairingCode(10);
 
     expect(store.approve(approval(clientId, code))).toBeDefined();
@@ -196,7 +281,7 @@ describe('Pairing codes', async () => {
 
   test('refuses a code once it expires', async () => {
     const store = await open();
-    const { clientId } = store.registerClient({ redirectUris: [REDIRECT] });
+    const { clientId } = register(store);
     const { code } = store.mintPairingCode(1);
 
     clock += MINUTE;
@@ -206,7 +291,7 @@ describe('Pairing codes', async () => {
 
   test('refuses a wrong or malformed code without spending the real one', async () => {
     const store = await open();
-    const { clientId } = store.registerClient({ redirectUris: [REDIRECT] });
+    const { clientId } = register(store);
     const { code } = store.mintPairingCode(10);
     const wrong = code.startsWith('Z') ? `Y${code.slice(1)}` : `Z${code.slice(1)}`;
 
@@ -218,33 +303,17 @@ describe('Pairing codes', async () => {
   test('a code minted by one opening of the store works in another, as after `modgud pair`', async () => {
     const { code } = (await open()).mintPairingCode(10);
     const server = await open();
-    const { clientId } = server.registerClient({ redirectUris: [REDIRECT] });
+    const { clientId } = register(server);
 
     expect(server.approve(approval(clientId, code))).toBeDefined();
   });
 
   test('concurrent approvals from separate processes spend one code once', async () => {
     const store = await open();
-    const { clientId } = store.registerClient({ redirectUris: [REDIRECT] });
+    const { clientId } = register(store);
     const { code } = store.mintPairingCode(10);
-    const startAt = String(Date.now() + 500);
 
-    const racers = Array.from({ length: 6 }, () =>
-      Bun.spawn(
-        [
-          process.execPath,
-          `${import.meta.dir}/testing/approve-race.ts`,
-          join(directory, 'modgud.sqlite'),
-          clientId,
-          code,
-          startAt,
-        ],
-        { stderr: 'inherit', stdout: 'pipe' },
-      ),
-    );
-    const outcomes = await Promise.all(
-      racers.map(async (racer) => (await new Response(racer.stdout).text()).trim()),
-    );
+    const outcomes = await race(6, ['approve', clientId, code]);
 
     expect(outcomes.filter((outcome) => outcome === 'approved')).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome === 'refused')).toHaveLength(5);
@@ -358,6 +427,36 @@ describe('authorization codes', async () => {
 
     expect(result.ok).toBe(true);
   });
+});
+
+describe('across processes', async () => {
+  test('processes opening a new store at once all open it', async () => {
+    const outcomes = await race(4, ['open']);
+
+    expect(outcomes).toEqual(['opened', 'opened', 'opened', 'opened']);
+    const store = await open();
+    expect(store.registerClient({ redirectUris: [REDIRECT] })).toBeDefined();
+  }, 20_000);
+
+  test('concurrent exchanges of one authorization code issue tokens once', async () => {
+    const store = await open({ now: Date.now });
+    const { clientId, code } = approveClient(store, { requestedRedirectUri: null });
+
+    const outcomes = await race(4, ['exchange', clientId, code]);
+
+    expect(outcomes.filter((outcome) => outcome === 'issued')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === 'invalid_grant')).toHaveLength(3);
+  }, 20_000);
+
+  test('concurrent refreshes with one refresh token rotate it once', async () => {
+    const store = await open({ now: Date.now });
+    const { clientId, refreshToken } = connectClient(store);
+
+    const outcomes = await race(4, ['refresh', clientId, refreshToken]);
+
+    expect(outcomes.filter((outcome) => outcome === 'issued')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === 'invalid_grant')).toHaveLength(3);
+  }, 20_000);
 });
 
 describe('refresh tokens', async () => {
@@ -639,6 +738,27 @@ describe('revokeAll', async () => {
 });
 
 describe('removeExpired', async () => {
+  test('keeps a spent authorization code, so a replay after it expired still revokes', async () => {
+    const store = await open();
+    const connected = connectClient(store);
+    clock += 2 * MINUTE;
+    store.removeExpired();
+
+    const replay = store.exchangeAuthorizationCode({
+      clientId: connected.clientId,
+      code: connected.code,
+      codeVerifier: VERIFIER,
+      redirectUri: REDIRECT,
+    });
+
+    expect(replay).toEqual({
+      error: 'invalid_grant',
+      ok: false,
+      revokedAuthorizationId: connected.authorizationId,
+    });
+    expect(store.isAuthorizationActive(connected.authorizationId)).toBe(false);
+  });
+
   test('deletes expired authorizations and keeps current ones', async () => {
     const store = await open({ maxTokenLifetimeDays: 1 });
     connectClient(store);
@@ -653,6 +773,47 @@ describe('removeExpired', async () => {
 });
 
 describe('the store file', async () => {
+  test('holds no Pairing code, authorization code, or token in plaintext', async () => {
+    const store = await open();
+    const { code: pairingCode } = store.mintPairingCode(10);
+    const connected = connectClient(store);
+    const refreshed = store.refresh({
+      clientId: connected.clientId,
+      refreshToken: connected.refreshToken,
+    });
+    if (!refreshed.ok) {
+      throw new Error(`The refresh failed: ${refreshed.error}`);
+    }
+    const secrets = [
+      pairingCode,
+      pairingCode.replace('-', ''),
+      connected.code,
+      connected.accessToken,
+      connected.refreshToken,
+      refreshed.tokens.accessToken,
+      refreshed.tokens.refreshToken,
+      // The secret part of each refresh token, after its family.
+      ...[connected.refreshToken, refreshed.tokens.refreshToken].map(
+        (token) => token.split('.')[1] ?? token,
+      ),
+    ];
+
+    const db = new Database(join(directory, 'modgud.sqlite'), { readonly: true });
+    const tables = db
+      .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all();
+    const contents = JSON.stringify(
+      tables.map(({ name }) => db.query(`SELECT * FROM "${name}"`).all()),
+    );
+    db.close();
+
+    expect(tables.length).toBeGreaterThan(0);
+    expect(contents).toContain(connected.clientId);
+    for (const secret of secrets) {
+      expect(contents).not.toContain(secret);
+    }
+  });
+
   test('is created with mode 0600 in a directory of mode 0700, as are its -wal and -shm files', async () => {
     const path = join(directory, 'state', 'modgud.sqlite');
     (await open({ path })).mintPairingCode(10);

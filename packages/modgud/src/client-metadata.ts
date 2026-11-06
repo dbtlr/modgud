@@ -1,5 +1,7 @@
 import { isIP } from 'node:net';
 
+import { LOOPBACK_HOSTS } from './uri.ts';
+
 // The rules a client's metadata follows, whether it arrives as a dynamic
 // registration or, later, as a Client ID Metadata Document (docs/oauth.md,
 // "Dynamic client registration" and "Client metadata documents").
@@ -8,8 +10,11 @@ const MAX_REDIRECT_URIS = 10;
 const MAX_REDIRECT_URI_LENGTH = 2048;
 const MAX_CLIENT_NAME_LENGTH = 100;
 
-// Hosts an `http` redirect URI may name (RFC 8252 loopback redirects).
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
+// A domain name as the URL parser writes it: dot-separated labels of
+// lowercase letters, digits, and hyphens (LDH), with no trailing dot. This also
+// keeps every character that means something in a Content-Security-Policy out
+// of the redirect origin the Approval page names there.
+const DOMAIN_NAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/u;
 
 // A URI is printable ASCII; this also refuses spaces, which the URL parser
 // would otherwise strip or encode.
@@ -52,9 +57,7 @@ export const isRedirectUri = (uri: string) => {
   }
   const secure = parseUri(uri, 'https');
   if (secure !== undefined) {
-    return (
-      secure.hostname !== '' && !secure.hostname.startsWith('[') && isIP(secure.hostname) === 0
-    );
+    return DOMAIN_NAME.test(secure.hostname) && isIP(secure.hostname) === 0;
   }
   const loopback = parseUri(uri, 'http');
   return loopback !== undefined && LOOPBACK_HOSTS.has(loopback.hostname);

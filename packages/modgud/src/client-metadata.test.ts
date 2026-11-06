@@ -61,6 +61,12 @@ describe('client metadata', () => {
     ['a space', 'https://example.com/a b'],
     ['a non-ASCII character', 'https://bücher.example/cb'],
     ['a backslash', String.raw`https://example.com\cb`],
+    ['CSP syntax in the host', 'https://evil.example;sandbox,script-src/cb'],
+    ['a quote in the host', "https://evil.example'unsafe-inline'/cb"],
+    ['an asterisk in the host', 'https://*.example.com/cb'],
+    ['an underscore in the host', 'https://my_app.example.com/cb'],
+    ['a trailing dot on the host', 'https://example.com./cb'],
+    ['an empty label in the host', 'https://example..com/cb'],
     ['more than 2,048 characters', `https://example.com/${'a'.repeat(2029)}`],
   ])('refuses a redirect URI with invalid_redirect_uri: %s', (_, uri) => {
     expect(parseClientMetadata({ redirect_uris: [uri] })).toEqual({

@@ -8,10 +8,11 @@ import { bearerToken, matchesTokenHash } from './bearer.ts';
 import { childEnvironment } from './child-environment.ts';
 import { serviceResource } from './config.ts';
 import type { Config, ServiceConfig } from './config.ts';
+import { answerUnexpectedError } from './http.ts';
+import type { PeerAddress } from './http.ts';
 import { loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { createOAuthEndpoints } from './oauth-endpoints.ts';
-import type { PeerAddress } from './oauth-endpoints.ts';
 import { INITIALIZE_TIMEOUT_MS, Session } from './session.ts';
 import type { SessionEndHandler } from './session.ts';
 import type { Store } from './store.ts';
@@ -314,8 +315,15 @@ export const createPublicListener = ({
     return session.handle(request);
   };
 
-  const fetch = async (request: Request, server?: PeerAddress): Promise<Response> =>
-    noStore((await oauthEndpoints(request, server)) ?? (await serviceRequest(request)));
+  // A request that fails unexpectedly gets a plain HTTP 500, never a page
+  // with the error's detail.
+  const fetch = async (request: Request, server?: PeerAddress): Promise<Response> => {
+    try {
+      return noStore((await oauthEndpoints(request, server)) ?? (await serviceRequest(request)));
+    } catch (error) {
+      return answerUnexpectedError(log, request, error);
+    }
+  };
 
   return {
     close: async () => {

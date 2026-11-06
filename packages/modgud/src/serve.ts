@@ -4,37 +4,51 @@ import { Command } from '@loomcli/core';
 
 import { createAdminListener } from './admin-listener.ts';
 import { configOption, loadConfig, openConfiguredStore } from './command-config.ts';
-import { loggable, timestampedLog } from './log.ts';
+import { internalServerError } from './http.ts';
+import { describeError, loggable, timestampedLog } from './log.ts';
+import type { Log } from './log.ts';
 import { createPublicListener } from './public-listener.ts';
-
-const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 // How long the Public listener lets a connection sit silent, in seconds. The
 // MCP transport writes an SSE keep-alive every 15 seconds, so an open stream
 // is never cut off.
 const CONNECTION_IDLE_SECONDS = 60;
 
+// How long the Admin listener lets a connection sit silent, in seconds. Its
+// slowest answer waits on a metadata fetch of at most 5 seconds.
+const ADMIN_IDLE_SECONDS = 30;
+
 // Starts one listener's HTTP server, or fails with a message naming its address.
+// Each listener answers its own failures with a plain HTTP 500; Bun's `error`
+// handler does the same for anything that escapes, and `development: false`
+// keeps Bun's error page, with its stack and paths, out of every answer.
 const listen = (
   {
     fetch,
     host,
     idleTimeout,
+    log,
     port,
   }: {
     fetch: (request: Request, server: Bun.Server<undefined>) => Promise<Response>;
     host: string;
-    idleTimeout?: number;
+    idleTimeout: number;
+    log: Log;
     port: number;
   },
   fail: (message: string) => never,
 ) => {
   try {
     return Bun.serve({
+      development: false,
+      error: (error) => {
+        log.warn(`Answered a request with HTTP 500: ${loggable(describeError(error))}`);
+        return internalServerError();
+      },
       fetch,
       hostname: host,
+      idleTimeout,
       port,
-      ...(idleTimeout === undefined ? {} : { idleTimeout }),
     });
   } catch (error) {
     return fail(`Could not listen on ${host}:${String(port)}: ${describeError(error)}`);
@@ -67,6 +81,7 @@ export const serve = new Command('serve', {
         fetch: publicListener.fetch,
         host: config.public.host,
         idleTimeout: CONNECTION_IDLE_SECONDS,
+        log,
         port: config.public.port,
       },
       (message) => {
@@ -77,7 +92,13 @@ export const serve = new Command('serve', {
       },
     );
     const adminServer = listen(
-      { fetch: adminListener.fetch, host: config.admin.host, port: config.admin.port },
+      {
+        fetch: adminListener.fetch,
+        host: config.admin.host,
+        idleTimeout: ADMIN_IDLE_SECONDS,
+        log,
+        port: config.admin.port,
+      },
       (message) => {
         void publicListener.close();
         void publicServer.stop(true);

@@ -65,7 +65,7 @@ const openAt = (path: string) =>
 
 // Registers a client and connects it, returning its tokens.
 const connect = (store: Store) => {
-  const { clientId } = store.registerClient({ redirectUris: [REDIRECT] });
+  const clientId = store.registerClient({ redirectUris: [REDIRECT] })?.clientId ?? '';
   const approved = store.approve({
     clientId,
     codeChallenge: s256Challenge(VERIFIER),

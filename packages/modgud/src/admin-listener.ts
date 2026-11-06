@@ -1,15 +1,15 @@
-import { timingSafeEqual } from 'node:crypto';
-
 import { renderApprovalPage, renderErrorPage, hostOf, pageHeaders } from './admin-pages.ts';
 import type { ErrorPage } from './admin-pages.ts';
+import { matchesTokenHash, sha256Hex } from './bearer.ts';
 import { clientLabel, isClientIdMetadataUrl, matchRedirectUri } from './client-metadata.ts';
 import { serviceResource } from './config.ts';
 import type { Config } from './config.ts';
+import { answerUnexpectedError, mediaType, readLimitedText } from './http.ts';
 import { loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { createMetadataDocumentFetcher } from './metadata-document.ts';
 import type { FetchMetadataDocument } from './metadata-document.ts';
-import { mediaType, readLimitedText } from './oauth-endpoints.ts';
+import { isCodeChallenge } from './pkce.ts';
 import { createWindowLimit } from './rate-limit.ts';
 import { randomIdentifier } from './secrets.ts';
 import type { Store } from './store.ts';
@@ -30,7 +30,6 @@ const FAILED_CODES_WINDOW = 10 * MINUTE;
 const FAILED_CODES_LIMIT = 20;
 
 const PENDING_COOKIE_PREFIX = '__Host-modgud-pending-';
-const CODE_CHALLENGE = /^[A-Za-z0-9_-]{43}$/u;
 
 // An authorization request waiting for the person to approve or deny it.
 type PendingRequest = {
@@ -92,8 +91,10 @@ const cookieValue = (request: Request, name: string) => {
   return undefined;
 };
 
-const equalSecrets = (a: string, b: string) =>
-  a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+// Compares SHA-256 digests, which always have the same length, so any two
+// strings compare in constant time without throwing.
+const equalSecrets = (presented: string, expected: string) =>
+  matchesTokenHash(presented, sha256Hex(expected));
 
 // A top-level browser navigation: `Sec-Fetch-Mode: navigate` with
 // `Sec-Fetch-Dest: document`, or no `Sec-Fetch-` header at all, as browsers
@@ -271,7 +272,7 @@ export const createAdminListener = ({
     const challenge = parameter('code_challenge');
     if (
       challenge === undefined ||
-      !CODE_CHALLENGE.test(challenge) ||
+      !isCodeChallenge(challenge) ||
       parameter('code_challenge_method') !== 'S256' ||
       (parameter('state')?.length ?? 0) > STATE_LIMIT
     ) {
@@ -347,11 +348,16 @@ export const createAdminListener = ({
     const error = checkRequest(parameter);
     if (error !== undefined) {
       const host = hostOf(redirectUri);
+      // A state over the limit is the error itself, so the link leaves it out.
+      const returnedState = (state?.length ?? 0) > STATE_LIMIT ? undefined : state;
       return errorPage(
         400,
         {
           message: `${AUTHORIZATION_ERRORS[error]} The request came from a client that answers at ${host}.`,
-          returnTo: { host, href: redirectWith(redirectUri, { error, iss: issuer, state }) },
+          returnTo: {
+            host,
+            href: redirectWith(redirectUri, { error, iss: issuer, state: returnedState }),
+          },
           title: 'This request cannot be approved',
         },
         redirectUri,
@@ -486,7 +492,7 @@ export const createAdminListener = ({
     return approvalPage(pendingRequest, 400, 'Choose Approve or Deny.');
   };
 
-  const fetch = async (request: Request) => {
+  const route = async (request: Request) => {
     if (request.headers.get('host') !== adminHost) {
       return misdirected();
     }
@@ -504,6 +510,16 @@ export const createAdminListener = ({
       headers: { Allow: 'GET, POST', 'Cache-Control': 'no-store' },
       status: 405,
     });
+  };
+
+  // A request that fails unexpectedly gets a plain HTTP 500, never a page
+  // with the error's detail.
+  const fetch = async (request: Request) => {
+    try {
+      return await route(request);
+    } catch (error) {
+      return answerUnexpectedError(log, request, error);
+    }
   };
 
   return {

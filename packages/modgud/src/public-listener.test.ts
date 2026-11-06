@@ -64,7 +64,7 @@ const openTestStore = async () => {
 // Approves a new client for the harness Service and exchanges its code, as a
 // chat client does through the Approval page and the token endpoint.
 const connectOAuthClient = (store: Store) => {
-  const { clientId } = store.registerClient({ redirectUris: [REDIRECT] });
+  const clientId = store.registerClient({ redirectUris: [REDIRECT] })?.clientId ?? '';
   const { code: pairingCode } = store.mintPairingCode(10);
   const approved = store.approve({
     clientId,

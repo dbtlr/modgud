@@ -31,3 +31,7 @@ export const loggable = (text: string) =>
       return character === '\t' ? ' ' : `\\u${code.toString(16).padStart(4, '0')}`;
     })
     .join('');
+
+// An error's message, for a log line or a fatal message.
+export const describeError = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);

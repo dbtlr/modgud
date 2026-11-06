@@ -1,6 +1,8 @@
 import { clientLabel, isClientIdMetadataUrl, parseClientMetadata } from './client-metadata.ts';
 import { serviceResource } from './config.ts';
 import type { Config } from './config.ts';
+import { mediaType, readLimitedText } from './http.ts';
+import type { PeerAddress } from './http.ts';
 import { loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { isCodeVerifier } from './pkce.ts';
@@ -21,51 +23,17 @@ const REGISTRATIONS_OVERALL = 100;
 
 const PROTECTED_RESOURCE = /^\/\.well-known\/oauth-protected-resource\/([a-z][a-z0-9-]*)\/mcp$/u;
 
-// What Bun's server offers the fetch handler: the peer address of a request.
-export type PeerAddress = { requestIP: (request: Request) => { address: string } | null };
-
 const oauthError = (error: string) => Response.json({ error }, { status: 400 });
 
 const methodNotAllowed = (allow: string) =>
   new Response('Method Not Allowed', { headers: { Allow: allow }, status: 405 });
 
-// The media type of a Content-Type header, without parameters, in lowercase.
-export const mediaType = (header: string | null) => header?.split(';')[0]?.trim().toLowerCase();
-
-// The request body as text, or undefined when it is over `limit` bytes.
-export const readLimitedText = async (request: Request, limit: number) => {
-  if (Number(request.headers.get('content-length')) > limit) {
-    return undefined;
-  }
-  if (request.body === null) {
-    return '';
-  }
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    // oxlint-disable-next-line no-await-in-loop -- a stream arrives one chunk at a time
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    size += value.byteLength;
-    if (size > limit) {
-      // oxlint-disable-next-line no-await-in-loop -- the loop ends here
-      await reader.cancel();
-      return undefined;
-    }
-    chunks.push(value);
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks));
-};
-
 // A registration's source: the address cloudflared reports, else the peer.
+// An empty header counts as absent.
 const sourceOf = (request: Request, server: PeerAddress | undefined) =>
   sourceKey(
-    request.headers.get('cf-connecting-ip')?.trim() ??
-      server?.requestIP(request)?.address ??
-      'unknown',
+    request.headers.get('cf-connecting-ip')?.trim() ||
+      (server?.requestIP(request)?.address ?? 'unknown'),
   );
 
 export const createOAuthEndpoints = ({
@@ -130,6 +98,11 @@ export const createOAuthEndpoints = ({
       });
     }
     const client = store.registerClient(metadata);
+    // Every stored registration has a live authorization; like any refused
+    // registration, this is not logged.
+    if (client === undefined) {
+      return new Response('Service Unavailable', { status: 503 });
+    }
     perSource.record(source);
     overall.record('all');
     log.info(
@@ -151,10 +124,11 @@ export const createOAuthEndpoints = ({
     );
   };
 
-  // Whether `client_id` names a client: a registration, or a Client ID
-  // Metadata Document's URL, which has no registration and is fetched only
-  // at the Approval page.
-  const isKnownClient = (clientId: string) =>
+  // Whether `client_id` names a client, so the token endpoint answers
+  // invalid_client only when it does not: a stored registration, or any Client
+  // ID Metadata Document URL, which has no registration and is fetched only at
+  // the Approval page.
+  const namesClient = (clientId: string) =>
     isClientIdMetadataUrl(clientId) || store.findClient(clientId) !== undefined;
 
   const tokenResponse = (result: TokenResult, clientId: string, presented: string) => {
@@ -206,7 +180,7 @@ export const createOAuthEndpoints = ({
       ) {
         return oauthError('invalid_request');
       }
-      if (!isKnownClient(clientId)) {
+      if (!namesClient(clientId)) {
         return oauthError('invalid_client');
       }
       const result = store.exchangeAuthorizationCode({
@@ -223,7 +197,7 @@ export const createOAuthEndpoints = ({
       if (refreshToken === undefined || clientId === undefined) {
         return oauthError('invalid_request');
       }
-      if (!isKnownClient(clientId)) {
+      if (!namesClient(clientId)) {
         return oauthError('invalid_client');
       }
       const result = store.refresh({ clientId, refreshToken, resource });

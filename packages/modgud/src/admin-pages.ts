@@ -1,5 +1,7 @@
 import { isIP } from 'node:net';
 
+import { LOOPBACK_HOSTS, unbracketed } from './uri.ts';
+
 // The Admin listener's pages (docs/oauth.md, "Admin listener endpoints" and
 // "Approval page"): plain server-rendered HTML with inline styles and no
 // script. Every value a client supplied passes through `shown`, which strips
@@ -27,7 +29,12 @@ export const shown = (text: string) => escapeHtml(text.replaceAll(UNSHOWN, ''));
 // which an international name is punycode.
 export const hostOf = (uri: string) => new URL(uri).host;
 
-const isIpLiteral = (uri: string) => isIP(new URL(uri).hostname.replace(/^\[(.*)\]$/u, '$1')) !== 0;
+const isIpLiteral = (uri: string) => isIP(unbracketed(new URL(uri).hostname)) !== 0;
+
+// The characters an origin with a domain name or IP-literal host may hold.
+// Registration already refuses any other, so this only backs it up: an origin
+// with any other character is never spliced into the policy.
+const PLAIN_ORIGIN = /^[a-z0-9.:\-[\]/]+$/u;
 
 // The page's Content-Security-Policy. The redirect URI's origin is a form
 // action so the browser follows Approve's and Deny's redirect to it; CSP
@@ -36,7 +43,11 @@ const formAction = (redirectUri: string | undefined) => {
   if (redirectUri === undefined) {
     return "form-action 'self'; ";
   }
-  return isIpLiteral(redirectUri) ? '' : `form-action 'self' ${new URL(redirectUri).origin}; `;
+  if (isIpLiteral(redirectUri)) {
+    return '';
+  }
+  const { origin } = new URL(redirectUri);
+  return PLAIN_ORIGIN.test(origin) ? `form-action 'self' ${origin}; ` : "form-action 'self'; ";
 };
 
 export const contentSecurityPolicy = (redirectUri: string | undefined) =>
@@ -100,8 +111,6 @@ export type ApprovalPage = {
   // A message about the last attempt, such as a wrong Pairing code.
   error?: string;
 };
-
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 
 export const renderApprovalPage = (page: ApprovalPage) => {
   const redirectHost = hostOf(page.redirectUri);

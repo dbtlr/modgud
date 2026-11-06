@@ -126,7 +126,13 @@ const approve = (
   return approved;
 };
 
-const registeredClient = () => store.registerClient({ redirectUris: [REDIRECT] }).clientId;
+const registeredClient = () => {
+  const client = store.registerClient({ redirectUris: [REDIRECT] });
+  if (client === undefined) {
+    throw new Error('The registration was refused.');
+  }
+  return client.clientId;
+};
 
 const exchange = (clientId: string, code: string, extra: Record<string, string> = {}) =>
   token({
@@ -350,6 +356,25 @@ describe('dynamic client registration', () => {
     expect(otherSource.status).toBe(201);
   });
 
+  test('counts a source by the peer address when CF-Connecting-IP is empty', async () => {
+    for (let index = 0; index < 10; index += 1) {
+      // oxlint-disable-next-line no-await-in-loop -- registrations count in order
+      await register(undefined, { headers: { 'CF-Connecting-IP': '' }, peer: '203.0.113.20' });
+    }
+
+    const samePeer = await register(undefined, {
+      headers: { 'CF-Connecting-IP': '' },
+      peer: '203.0.113.20',
+    });
+    const otherPeer = await register(undefined, {
+      headers: { 'CF-Connecting-IP': '' },
+      peer: '203.0.113.21',
+    });
+
+    expect(samePeer.status).toBe(429);
+    expect(otherPeer.status).toBe(201);
+  });
+
   test('counts IPv6 sources by their /64 prefix', async () => {
     for (let index = 0; index < 10; index += 1) {
       // oxlint-disable-next-line no-await-in-loop -- registrations count in order
@@ -371,6 +396,93 @@ describe('dynamic client registration', () => {
 
     expect(refused.status).toBe(429);
     expect(refused.headers.get('retry-after')).toBe('540');
+  });
+
+  test('answers 503 and stores nothing when every stored registration has a live authorization', async () => {
+    const full = await openStore({
+      maxTokenLifetimeDays: 30,
+      now: () => clock,
+      path: join(directory, 'full.sqlite'),
+      resource: RESOURCE,
+      storedClients: 1,
+      warn: () => undefined,
+    });
+    const fullListener = createPublicListener({
+      config,
+      log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
+      now: () => clock,
+      parentEnvironment: {},
+      store: full,
+    });
+    try {
+      const { client_id: clientId } = (await (
+        await fullListener.fetch(
+          new Request(`${PUBLIC}/oauth/register`, {
+            body: JSON.stringify({ redirect_uris: [REDIRECT] }),
+            headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+          }),
+        )
+      ).json()) as { client_id: string };
+      const { code: pairingCode } = full.mintPairingCode(10);
+      full.approve({
+        clientId,
+        codeChallenge: s256Challenge(VERIFIER),
+        pairingCode,
+        redirectUri: REDIRECT,
+        requestedRedirectUri: null,
+      });
+      lines = [];
+
+      const refused = await fullListener.fetch(
+        new Request(`${PUBLIC}/oauth/register`, {
+          body: JSON.stringify({ redirect_uris: [REDIRECT] }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+        }),
+      );
+
+      expect(refused.status).toBe(503);
+      expect(refused.headers.get('cache-control')).toBe('no-store');
+      expect(lines).toEqual([]);
+      expect(full.findClient(clientId)).toBeDefined();
+    } finally {
+      await fullListener.close();
+      full.close();
+    }
+  });
+
+  test('answers a plain HTTP 500 when the store fails, logging the error without its stack', async () => {
+    const failing: Store = {
+      ...store,
+      registerClient: () => {
+        throw new Error('database is locked');
+      },
+    };
+    const broken = createPublicListener({
+      config,
+      log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
+      now: () => clock,
+      parentEnvironment: {},
+      store: failing,
+    });
+    try {
+      const response = await broken.fetch(
+        new Request(`${PUBLIC}/oauth/register`, {
+          body: JSON.stringify({ redirect_uris: [REDIRECT] }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+        }),
+      );
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(await response.text()).toBe('Internal Server Error');
+      expect(lines).toEqual(['Answered POST /oauth/register with HTTP 500: database is locked']);
+    } finally {
+      await broken.close();
+    }
   });
 
   test('does not count a refused registration', async () => {

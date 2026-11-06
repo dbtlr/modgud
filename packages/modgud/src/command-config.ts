@@ -4,10 +4,8 @@ import type { Host, Out } from '@loomcli/core';
 
 import { defaultConfigPath, readConfig, resolveStorePath, serviceResource } from './config.ts';
 import type { Config } from './config.ts';
-import { loggable } from './log.ts';
+import { describeError, loggable } from './log.ts';
 import { openStore } from './store.ts';
-
-const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 // The `--config` option that `serve`, `pair`, and `revoke` share, so every
 // command acts on the same configuration file and store.

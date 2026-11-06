@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite';
+import { Database, SQLiteError } from 'bun:sqlite';
 
 import { z } from 'zod';
 
@@ -84,6 +84,8 @@ export type StoreOptions = {
   resource: string;
   // Milliseconds since the epoch.
   now?: () => number;
+  // How many registrations the store keeps: 500, or fewer in tests.
+  storedClients?: number;
 };
 
 export type RegisteredClient = {
@@ -141,11 +143,14 @@ export type Refresh = {
 export type AccessGrant = { authorizationId: string; clientId: string; resource: string };
 
 export type Store = {
-  // Stores a dynamic registration, evicting the oldest never-approved one past 500.
+  // Stores a dynamic registration. Past 500 it evicts the oldest registration
+  // with no live authorization, never-approved ones first; when every stored
+  // registration has a live authorization, it stores nothing and returns
+  // undefined.
   registerClient: (registration: {
     clientName?: string | undefined;
     redirectUris: string[];
-  }) => RegisteredClient;
+  }) => RegisteredClient | undefined;
   // A stored registration, or undefined when it is unknown or was never approved within 1 hour.
   findClient: (clientId: string) => RegisteredClient | undefined;
   // Mints a Pairing code that lasts the given minutes; only its hash is stored.
@@ -204,21 +209,46 @@ const toClient = (row: ClientRow): RegisteredClient => ({
 });
 
 // Creates the schema in a new database, and refuses one a newer Modgud wrote.
+// The version is read inside the write transaction, so when several
+// processes open a new store at once, only the first creates the schema.
 const migrate = (db: Database, path: string) => {
-  const version =
-    db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
-  if (version === SCHEMA_VERSION) {
-    return;
-  }
-  if (version !== 0) {
-    throw new Error(
-      `The store ${path} has schema version ${String(version)}, which this Modgud does not know.`,
-    );
-  }
   db.transaction(() => {
+    const version =
+      db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
+    if (version === SCHEMA_VERSION) {
+      return;
+    }
+    if (version !== 0) {
+      throw new Error(
+        `The store ${path} has schema version ${String(version)}, which this Modgud does not know.`,
+      );
+    }
     db.run(SCHEMA);
     db.run(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
   }).immediate();
+};
+
+// Switches the database to write-ahead logging, which lasts once set. While
+// another process opening a new store is switching it too, SQLite answers
+// busy at once rather than waiting out the busy timeout, so this retries.
+const useWriteAheadLog = async (db: Database) => {
+  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+  for (;;) {
+    try {
+      db.run('PRAGMA journal_mode = WAL');
+      return;
+    } catch (error) {
+      if (
+        !(error instanceof SQLiteError) ||
+        error.code !== 'SQLITE_BUSY' ||
+        Date.now() > deadline
+      ) {
+        throw error;
+      }
+    }
+    // oxlint-disable-next-line no-await-in-loop -- each retry waits for the other process
+    await Bun.sleep(10);
+  }
 };
 
 // Opens the store at `options.path`, checking its directory and file modes
@@ -226,12 +256,13 @@ const migrate = (db: Database, path: string) => {
 export const openStore = async (options: StoreOptions): Promise<Store> => {
   const { path, warn, resource } = options;
   const now = options.now ?? Date.now;
+  const storedClients = options.storedClients ?? STORED_CLIENTS;
   const lifetime = options.maxTokenLifetimeDays * DAY;
 
   await secureStoreFiles(path, warn);
   const db = new Database(path, { create: true, strict: true });
   db.run(`PRAGMA busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
-  db.run('PRAGMA journal_mode = WAL');
+  await useWriteAheadLog(db);
   db.run('PRAGMA foreign_keys = ON');
   migrate(db, path);
   // WAL mode adds the -wal and -shm files, which take the database's mode.
@@ -296,9 +327,43 @@ export const openStore = async (options: StoreOptions): Promise<Store> => {
     return { error: 'invalid_grant', ok: false, revokedAuthorizationId: authorizationId };
   };
 
+  // The registrations the cap may evict, in the order it evicts them: those
+  // with no live authorization, never-approved ones first, then oldest first.
+  const evictableClients = db.query<
+    { client_id: string },
+    { resource: string; expired_before: number; limit: number }
+  >(
+    `SELECT client_id FROM clients c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM authorizations a
+         WHERE a.client_id = c.client_id AND a.resource = $resource AND a.approved_at > $expired_before
+      )
+      ORDER BY approved_at IS NOT NULL, created_at, rowid
+      LIMIT $limit`,
+  );
+
   const registerClient: Store['registerClient'] = ({ clientName, redirectUris }) =>
     db
-      .transaction(() => {
+      .transaction((): RegisteredClient | undefined => {
+        const { stored } = db
+          .query<{ stored: number }, []>('SELECT count(*) AS stored FROM clients')
+          .get() ?? { stored: 0 };
+        const excess = stored - storedClients + 1;
+        if (excess > 0) {
+          const evicted = evictableClients.all({
+            expired_before: now() - lifetime,
+            limit: excess,
+            resource,
+          });
+          if (evicted.length < excess) {
+            return undefined;
+          }
+          for (const { client_id: clientId } of evicted) {
+            db.query('DELETE FROM clients WHERE client_id = $client_id').run({
+              client_id: clientId,
+            });
+          }
+        }
         const row: ClientRow = {
           client_id: randomIdentifier(),
           client_name: clientName ?? null,
@@ -308,13 +373,6 @@ export const openStore = async (options: StoreOptions): Promise<Store> => {
         db.query(
           'INSERT INTO clients (client_id, client_name, redirect_uris, created_at) VALUES ($client_id, $client_name, $redirect_uris, $created_at)',
         ).run(row);
-        db.query(
-          `DELETE FROM clients WHERE client_id IN (
-             SELECT client_id FROM clients WHERE approved_at IS NULL
-             ORDER BY created_at, rowid
-             LIMIT max(0, (SELECT count(*) FROM clients) - $stored)
-           )`,
-        ).run({ stored: STORED_CLIENTS });
         return toClient(row);
       })
       .immediate();

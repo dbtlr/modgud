@@ -2,6 +2,7 @@ import { request } from 'node:https';
 import { isIP } from 'node:net';
 
 import type { Connect, MetadataResponse } from './metadata-document.ts';
+import { unbracketed } from './uri.ts';
 
 // An HTTPS GET to one address that has already passed the address check
 // (docs/oauth.md, "Client metadata documents"). The request goes to the
@@ -14,7 +15,7 @@ export const pinnedHttpsConnect =
   ({ ca, port = 443 }: { ca?: string; port?: number } = {}): Connect =>
   async ({ address, signal, url }) => {
     const connected = Promise.withResolvers<MetadataResponse>();
-    const hostname = url.hostname.replace(/^\[(.*)\]$/u, '$1');
+    const hostname = unbracketed(url.hostname);
     const outgoing = request(
       {
         agent: false,

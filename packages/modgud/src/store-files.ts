@@ -1,20 +1,23 @@
 import type { Stats } from 'node:fs';
-import { chmod, mkdir, open, stat } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
+
+import { describeError } from './log.ts';
 
 const PRIVATE_DIRECTORY = 0o700;
 const PRIVATE_FILE = 0o600;
 const GROUP_OR_OTHERS_WRITE = 0o022;
 const GROUP_OR_OTHERS_ANY = 0o077;
 
-const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
-
 const isMissing = (error: unknown) =>
   error instanceof Error && 'code' in error && error.code === 'ENOENT';
 
-const statOrUndefined = async (path: string): Promise<Stats | undefined> => {
+const statOrUndefined = async (
+  path: string,
+  read: (path: string) => Promise<Stats> = stat,
+): Promise<Stats | undefined> => {
   try {
-    return await stat(path);
+    return await read(path);
   } catch (error) {
     if (isMissing(error)) {
       return undefined;
@@ -68,14 +71,21 @@ const narrowFile = async (file: string, warn: (message: string) => void) => {
 // Checks the store's directory and files before Modgud or a command reads the
 // store (docs/oauth.md, "Store"). It creates an absent directory with mode
 // 0700 and an absent database file with mode 0600, refuses an unsafe
-// directory, and narrows the database and SQLite's -wal, -shm, and -journal
-// files to 0600. Throws an Error that names the path and how to fix it.
+// directory or a store path that is a symbolic link, and narrows the database
+// and SQLite's -wal, -shm, and -journal files to 0600. Throws an Error that
+// names the path and how to fix it.
 export const secureStoreFiles = async (
   path: string,
   warn: (message: string) => void,
   uid: number | undefined = process.getuid?.(),
 ) => {
   await secureDirectory(dirname(path), uid);
+  // A link would let the store, and the mode Modgud sets, land on another file.
+  if ((await statOrUndefined(path, lstat))?.isSymbolicLink() === true) {
+    throw new Error(
+      `The store ${path} is a symbolic link. Set store.path to the database file itself.`,
+    );
+  }
   // Creating the file first gives it mode 0600 from the start, and SQLite
   // gives its -wal, -shm, and -journal files the database file's mode.
   await (await open(path, 'a', PRIVATE_FILE)).close();
