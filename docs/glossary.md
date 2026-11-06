@@ -29,7 +29,7 @@ The opaque value a Grant passes to its Service to say who the Caller acts for, s
 _Avoid_: User token, credential
 
 **Pairing code**:
-A single-use, short-lived code minted from a Grant and entered on the Approval page to approve one chat-client authorization for that Grant.
+A single-use, short-lived code minted from a Grant and entered on the Approval page to approve one chat-client Authorization for that Grant. In Phase 1, `modgud pair` mints it for the temporary credential harness.
 _Avoid_: Invite, one-time password
 
 **Approval page**:
@@ -41,8 +41,12 @@ The listener that binds localhost, is reached only through the tunnel, and serve
 _Avoid_: Frontend, gateway
 
 **Admin listener**:
-The listener that binds the tailnet interface only and serves the Approval page, the admin API, and the admin panel.
+The listener that binds a tailnet address only and serves the Approval page, the admin API, and the admin panel.
 _Avoid_: Private port, backend
+
+**Authorization**:
+One approved chat-client connection: a client, the redirect URI it was approved for, and the Service it reaches, from approval until it expires or is revoked. Its access and refresh tokens derive from it, and the Sessions it opens are bound to it.
+_Avoid_: Consent, login
 
 **Session**:
 One MCP session between a Caller and a Service under one Grant, from `initialize` until the Caller deletes it, it idles out, its Grant is revoked or expires, or its Child exits. Modgud gives each Session its own Child.

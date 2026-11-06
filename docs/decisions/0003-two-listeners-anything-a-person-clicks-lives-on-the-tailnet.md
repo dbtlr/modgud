@@ -38,4 +38,4 @@ The Admin listener's TLS depends on the proxy in front of it, and the hop from t
 ## Changelog
 
 - 2026-11-05: Proposed. It becomes accepted as the code it governs lands.
-- 2026-11-06: Addendum and accepted. The Admin listener landed with the OAuth server: it binds a tailnet address behind a TLS-terminating proxy on the tailnet, and both listeners take their public addresses from configuration.
+- 2026-11-06: Addendum and accepted. The listener split landed with the Approval page, the Admin listener's first route; the admin API and panel arrive under this decision later. The Admin listener binds a tailnet address behind a TLS-terminating proxy on the tailnet, and both listeners take their public addresses from configuration.

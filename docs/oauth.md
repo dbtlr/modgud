@@ -81,8 +81,8 @@ A valid request gets HTTP 201 with `client_id`, `client_id_issued_at`, `client_n
 Registration is open to the internet, so it is bounded. A request's source is the `CF-Connecting-IP` header, which cloudflared sets, or the peer address when the header is absent. An IPv6 source counts by its /64 prefix.
 
 - At most 10 registrations from one source, and 100 overall, in any 10 minutes. Past either, HTTP 429 with `Retry-After`.
-- At most 500 stored registrations. A new registration past that evicts the oldest one that has never been approved.
-- A registration that has never been approved is deleted 1 hour after it was made. A registration that has been approved is kept, so a client can pair again with the `client_id` it holds.
+- At most 500 stored registrations. A new registration past that evicts the oldest registration with no live authorization, never-approved ones first. When every stored registration has a live authorization, the new one gets HTTP 503.
+- A registration that has never been approved is deleted 1 hour after it was made. A registration that has been approved is kept, so a client can pair again with the `client_id` it holds, unless the cap evicts it.
 
 ### Token endpoint
 
@@ -179,13 +179,13 @@ Every single-use step is atomic: spending a Pairing code, spending an authorizat
 
 ## Store
 
-Modgud keeps registrations, unspent Pairing codes, authorizations, authorization codes, and tokens in one SQLite database at `store.path`. Every Pairing code, authorization code, and token is stored only as its SHA-256 hash; a refresh token's family is stored as is. Expired rows are deleted at least hourly. The server reads the store on every request, so a change that `modgud pair` or `modgud revoke` writes takes effect on the next request, without a restart. Everything in the store survives a restart; pending requests, which live in memory, do not.
+Modgud keeps registrations, unspent Pairing codes, authorizations, authorization codes, and tokens in one SQLite database at `store.path`. Every Pairing code, authorization code, and token is stored only as its SHA-256 hash; a refresh token's family is stored as is. Expired rows are deleted at least hourly. A spent authorization code is kept while its authorization lives, so a replay of it is still detected. The server reads the store on every request, so a change that `modgud pair` or `modgud revoke` writes takes effect on the next request, without a restart. Everything in the store survives a restart; pending requests, which live in memory, do not.
 
 Whenever Modgud or a command opens the store, it checks the store's directory and file before reading. It creates an absent directory with mode 0700. It refuses to start when an existing directory is writable by group or others, or owned by another account. It sets the file, and SQLite's `-wal`, `-shm`, and `-journal` files beside it, to mode 0600, logging a warning when an existing mode was wider, and refuses to start when it cannot.
 
 ## Logging
 
-Modgud never logs a Pairing code, an authorization code, a token, a refresh-token family, an `Authorization` header, or a `Location` header. It logs registrations, approvals, denials, failed Pairing codes, throttling, replay revocations, and `modgud revoke`, naming the client and authorization by a short prefix of their identifiers.
+Modgud never logs a Pairing code, an authorization code, a token, a refresh-token family, an `Authorization` header, or a `Location` header. It logs registrations, approvals, denials, failed Pairing codes, the Pairing code throttle, metadata fetch limits, replay revocations, and `modgud revoke`. It names a registered client and an authorization by a short prefix of their identifiers, and a metadata-document client by its host. Refused registrations are not logged, so a flood cannot fill the log.
 
 ## Commands
 
