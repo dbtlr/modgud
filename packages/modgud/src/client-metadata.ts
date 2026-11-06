@@ -10,11 +10,13 @@ const MAX_REDIRECT_URIS = 10;
 const MAX_REDIRECT_URI_LENGTH = 2048;
 const MAX_CLIENT_NAME_LENGTH = 100;
 
-// A domain name as the URL parser writes it: dot-separated labels of
-// lowercase letters, digits, and hyphens (LDH), with no trailing dot. This also
-// keeps every character that means something in a Content-Security-Policy out
-// of the redirect origin the Approval page names there.
-const DOMAIN_NAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/u;
+// A domain name as the URL parser writes it: dot-separated labels of 1 to 63
+// lowercase letters, digits, and hyphens (LDH), each starting and ending with a
+// letter or digit, with no trailing dot. This also keeps every character that
+// means something in a Content-Security-Policy out of the redirect origin the
+// Approval page names there.
+const DOMAIN_NAME =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/u;
 
 // A URI is printable ASCII; this also refuses spaces, which the URL parser
 // would otherwise strip or encode.

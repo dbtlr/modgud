@@ -67,12 +67,21 @@ describe('client metadata', () => {
     ['an underscore in the host', 'https://my_app.example.com/cb'],
     ['a trailing dot on the host', 'https://example.com./cb'],
     ['an empty label in the host', 'https://example..com/cb'],
+    ['a label starting with a hyphen', 'https://-bad.example/cb'],
+    ['a label ending with a hyphen', 'https://bad-.example/cb'],
+    ['a label that is only a hyphen', 'https://-.example/cb'],
+    ['a label of 64 characters', `https://${'a'.repeat(64)}.example/cb`],
     ['more than 2,048 characters', `https://example.com/${'a'.repeat(2029)}`],
   ])('refuses a redirect URI with invalid_redirect_uri: %s', (_, uri) => {
     expect(parseClientMetadata({ redirect_uris: [uri] })).toEqual({
       error: 'invalid_redirect_uri',
       ok: false,
     });
+  });
+
+  test('accepts a host label of 63 characters with inner hyphens', () => {
+    const uri = `https://a-${'b'.repeat(59)}-c.example/cb`;
+    expect(parseClientMetadata({ redirect_uris: [uri] }).ok).toBe(true);
   });
 
   test('accepts a redirect URI of exactly 2,048 characters', () => {
