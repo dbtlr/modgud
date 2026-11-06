@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 import { sha256Hex } from './bearer.ts';
+import { s256Challenge } from './pkce.ts';
+import { openStore } from './store.ts';
 
 const directory = await mkdtemp(join(tmpdir(), 'modgud-serve-'));
 afterAll(async () => {
@@ -39,11 +41,16 @@ async function* linesOf(stream: ReadableStream<Uint8Array>) {
   }
 }
 
-test('serve answers MCP on the configured Service path and ends its Sessions on SIGTERM', async () => {
-  const configPath = join(directory, 'modgud.toml');
+// A configuration serving the stub Service, with its store in the test's directory.
+const writeServeConfig = async (name: string) => {
+  const configPath = join(directory, `${name}.toml`);
+  const storePath = join(directory, `${name}.sqlite`);
   await writeFile(
     configPath,
     `
+      [store]
+      path = ${JSON.stringify(storePath)}
+
       [harness]
       bearer_token_sha256 = "${sha256Hex('serve-token')}"
       service = "stub"
@@ -61,6 +68,11 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
       args = [${JSON.stringify(`${import.meta.dir}/testing/stub-service.ts`)}]
     `,
   );
+  return { configPath, storePath };
+};
+
+// Starts `modgud serve` and returns its base URL once it listens.
+const startServe = async (configPath: string) => {
   const child = Bun.spawn(
     [process.execPath, `${import.meta.dir}/main.ts`, 'serve', '--config', configPath],
     { env: plainEnvironment, stderr: 'pipe', stdout: 'pipe' },
@@ -68,6 +80,12 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
   const lines = linesOf(child.stdout)[Symbol.asyncIterator]();
   const listening = await readUntil(lines, / info Listening on /u);
   const base = /Listening on (\S+) for \/stub\/mcp\.$/u.exec(listening)?.[1] ?? '';
+  return { base, child, lines };
+};
+
+test('serve answers MCP on the configured Service path and ends its Sessions on SIGTERM', async () => {
+  const { configPath } = await writeServeConfig('modgud');
+  const { base, child, lines } = await startServe(configPath);
 
   const client = new Client({ name: 'serve-test', version: '1.0.0' });
   await client.connect(
@@ -99,4 +117,63 @@ test('serve refuses an invalid configuration, naming the file and the setting', 
   expect(exitCode).not.toBe(0);
   expect(stderr).toContain(configPath);
   expect(stderr).toContain('harness.bearer_token_sha256');
+});
+
+test('serve opens the configured store and serves the OAuth endpoints and access tokens', async () => {
+  const { configPath, storePath } = await writeServeConfig('oauth');
+  const { base, child, lines } = await startServe(configPath);
+  try {
+    const metadata = await fetch(new URL('.well-known/oauth-authorization-server', base));
+    const registration = await fetch(new URL('oauth/register', base), {
+      body: JSON.stringify({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+    });
+    expect(((await metadata.json()) as { issuer: string }).issuer).toBe(
+      'https://modgud.example.com',
+    );
+    expect(registration.status).toBe(201);
+    const { client_id: clientId } = (await registration.json()) as { client_id: string };
+
+    // Approves the client from a second handle on the store, as the Admin
+    // listener will, and redeems the code at the server's token endpoint.
+    const store = await openStore({
+      maxTokenLifetimeDays: 30,
+      path: storePath,
+      resource: 'https://modgud.example.com/stub/mcp',
+      warn: () => undefined,
+    });
+    const verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+    const approved = store.approve({
+      clientId,
+      codeChallenge: s256Challenge(verifier),
+      pairingCode: store.mintPairingCode(10).code,
+      redirectUri: 'https://claude.ai/api/mcp/auth_callback',
+      requestedRedirectUri: null,
+    });
+    store.close();
+    const tokenResponse = await fetch(new URL('oauth/token', base), {
+      body: new URLSearchParams({
+        client_id: clientId,
+        code: approved?.code ?? '',
+        code_verifier: verifier,
+        grant_type: 'authorization_code',
+      }),
+      method: 'POST',
+    });
+    const { access_token: accessToken } = (await tokenResponse.json()) as { access_token: string };
+
+    const client = new Client({ name: 'serve-test', version: '1.0.0' });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL('stub/mcp', base), {
+        requestInit: { headers: { Authorization: `Bearer ${accessToken}` } },
+      }),
+    );
+    const result = await client.callTool({ arguments: { text: 'oauth' }, name: 'echo' });
+    expect(result.content).toEqual([{ text: 'oauth', type: 'text' }]);
+  } finally {
+    child.kill('SIGTERM');
+  }
+  await readUntil(lines, / info Stopped\.$/u);
+  expect(await child.exited).toBe(143);
 });

@@ -8,6 +8,9 @@
 // Everything after `--` is the Service's command and arguments. The Service
 // gets a Child's environment both ways, except that the direct leg's SDK
 // stdio transport also adds SHELL and TERM from this process's environment.
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -17,6 +20,7 @@ import { sha256Hex } from '../src/bearer.ts';
 import { childEnvironment } from '../src/child-environment.ts';
 import { parseConfig } from '../src/config.ts';
 import { createPublicListener } from '../src/public-listener.ts';
+import { openStore } from '../src/store.ts';
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -106,10 +110,19 @@ const proxied = await (async () => {
     command = ${JSON.stringify(command)}
     args = ${JSON.stringify(args)}
   `);
+  // The listener needs an OAuth store; the bench uses a throwaway one.
+  const storeDirectory = await mkdtemp(join(tmpdir(), 'modgud-bench-'));
+  const store = await openStore({
+    maxTokenLifetimeDays: 30,
+    path: join(storeDirectory, 'modgud.sqlite'),
+    resource: 'https://modgud.example.com/bench/mcp',
+    warn: (line) => console.error(line),
+  });
   const listener = createPublicListener({
     config,
     log: { info: () => undefined, warn: (line) => console.error(line) },
     parentEnvironment: process.env,
+    store,
   });
   const server = Bun.serve({
     fetch: listener.fetch,
@@ -129,6 +142,8 @@ const proxied = await (async () => {
   } finally {
     await listener.close();
     await server.stop(true);
+    store.close();
+    await rm(storeDirectory, { force: true, recursive: true });
   }
 })();
 
