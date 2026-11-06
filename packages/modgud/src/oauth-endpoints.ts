@@ -30,10 +30,10 @@ const methodNotAllowed = (allow: string) =>
   new Response('Method Not Allowed', { headers: { Allow: allow }, status: 405 });
 
 // The media type of a Content-Type header, without parameters, in lowercase.
-const mediaType = (header: string | null) => header?.split(';')[0]?.trim().toLowerCase();
+export const mediaType = (header: string | null) => header?.split(';')[0]?.trim().toLowerCase();
 
 // The request body as text, or undefined when it is over `limit` bytes.
-const readLimitedText = async (request: Request, limit: number) => {
+export const readLimitedText = async (request: Request, limit: number) => {
   if (Number(request.headers.get('content-length')) > limit) {
     return undefined;
   }

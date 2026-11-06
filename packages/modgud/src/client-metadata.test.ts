@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 
-import { clientLabel, isClientIdMetadataUrl, parseClientMetadata } from './client-metadata.ts';
+import {
+  clientLabel,
+  isClientIdMetadataUrl,
+  matchRedirectUri,
+  parseClientMetadata,
+  parseMetadataDocument,
+} from './client-metadata.ts';
 
 const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
 
@@ -135,5 +141,116 @@ describe('a client in the log', () => {
   test('is a metadata document by its host, and a registered client by a short prefix', () => {
     expect(clientLabel('https://claude.ai/oauth/mcp-oauth-client-metadata')).toBe('claude.ai');
     expect(clientLabel('dGhpcyBpcyBub3QgYSBVUkwgYXQgYWxsLCBqdXN0IGFuIGlk')).toBe('dGhpcyBp');
+  });
+});
+
+describe('a client ID metadata document', () => {
+  const URL_ID = 'https://chatgpt.com/oauth/client.json';
+  const document = (fields: Record<string, unknown> = {}) => ({
+    client_id: URL_ID,
+    client_name: 'ChatGPT',
+    redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'],
+    ...fields,
+  });
+
+  test('gives the client name and redirect URIs of a valid document', () => {
+    expect(parseMetadataDocument(URL_ID, document())).toEqual({
+      clientName: 'ChatGPT',
+      redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'],
+    });
+  });
+
+  test.each([
+    [
+      'a list of methods that includes none',
+      { token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'] },
+    ],
+    [
+      'the list, which overrides a singular method',
+      {
+        token_endpoint_auth_method: 'private_key_jwt',
+        token_endpoint_auth_methods_supported: ['private_key_jwt', 'none'],
+      },
+    ],
+    ['a singular method of none', { token_endpoint_auth_method: 'none' }],
+    ['no method at all', {}],
+  ])('accepts a public client stated by %s', (_, fields) => {
+    expect(parseMetadataDocument(URL_ID, document(fields))).toBeDefined();
+  });
+
+  test.each([
+    ['not an object', [URL_ID]],
+    ['no client_id', document({ client_id: undefined })],
+    ['a client_id other than its URL', document({ client_id: 'https://chatgpt.com/other.json' })],
+    [
+      'a client_id that differs only in case',
+      document({ client_id: 'https://ChatGPT.com/oauth/client.json' }),
+    ],
+    ['a client_secret', document({ client_secret: 'shh' })],
+    ['an empty client_secret', document({ client_secret: '' })],
+    [
+      'a list of methods without none',
+      document({ token_endpoint_auth_methods_supported: ['private_key_jwt'] }),
+    ],
+    [
+      'a list of methods that is not a list',
+      document({ token_endpoint_auth_methods_supported: 'none' }),
+    ],
+    [
+      'a singular method other than none',
+      document({ token_endpoint_auth_method: 'client_secret_basic' }),
+    ],
+    ['no redirect URIs', document({ redirect_uris: [] })],
+    ['an invalid redirect URI', document({ redirect_uris: ['http://chatgpt.com/cb'] })],
+    ['a client name over 100 characters', document({ client_name: 'x'.repeat(101) })],
+  ])('refuses a document with %s', (_, value) => {
+    expect(parseMetadataDocument(URL_ID, value)).toBeUndefined();
+  });
+});
+
+describe('redirect URI matching', () => {
+  const REGISTERED = [REDIRECT, 'http://127.0.0.1:33418/callback', 'http://localhost/cb?x=1'];
+
+  test('matches a requested redirect URI by exact string comparison', () => {
+    expect(matchRedirectUri(REGISTERED, REDIRECT)).toBe(REDIRECT);
+    expect(matchRedirectUri(REGISTERED, `${REDIRECT}/`)).toBeUndefined();
+    expect(matchRedirectUri(REGISTERED, 'https://Claude.ai/api/mcp/auth_callback')).toBeUndefined();
+    expect(
+      matchRedirectUri(REGISTERED, 'https://claude.ai:443/api/mcp/auth_callback'),
+    ).toBeUndefined();
+  });
+
+  test('matches a loopback redirect URI that differs only in its port, keeping the requested port', () => {
+    expect(matchRedirectUri(REGISTERED, 'http://127.0.0.1:50123/callback')).toBe(
+      'http://127.0.0.1:50123/callback',
+    );
+    expect(matchRedirectUri(REGISTERED, 'http://127.0.0.1/callback')).toBe(
+      'http://127.0.0.1/callback',
+    );
+    expect(matchRedirectUri(REGISTERED, 'http://localhost:8080/cb?x=1')).toBe(
+      'http://localhost:8080/cb?x=1',
+    );
+  });
+
+  test.each([
+    ['another path', 'http://127.0.0.1:50123/other'],
+    ['another loopback host', 'http://localhost:33418/callback'],
+    ['another query', 'http://localhost:8080/cb?x=2'],
+    ['https instead of http', 'https://127.0.0.1:33418/callback'],
+    ['an invalid port', 'http://127.0.0.1:99999/callback'],
+    ['userinfo', 'http://user@127.0.0.1:33418/callback'],
+  ])('refuses a loopback redirect URI with %s', (_, uri) => {
+    expect(matchRedirectUri(REGISTERED, uri)).toBeUndefined();
+  });
+
+  test('uses the one registered redirect URI when the request names none', () => {
+    expect(matchRedirectUri([REDIRECT], undefined)).toBe(REDIRECT);
+    expect(matchRedirectUri(REGISTERED, undefined)).toBeUndefined();
+  });
+
+  test('does not apply the port exception to https', () => {
+    expect(
+      matchRedirectUri(['https://app.example.com:8443/cb'], 'https://app.example.com:9443/cb'),
+    ).toBeUndefined();
   });
 });

@@ -62,6 +62,7 @@ const writeServeConfig = async (name: string) => {
       [admin]
       base_url = "https://modgud.example.ts.net"
       host = "100.64.0.1"
+      port = 0
 
       [services.stub]
       command = ${JSON.stringify(process.execPath)}
@@ -71,16 +72,28 @@ const writeServeConfig = async (name: string) => {
   return { configPath, storePath };
 };
 
-// Starts `modgud serve` and returns its base URL once it listens.
+// Starts `modgud serve`, with its Admin listener on 127.0.0.1 in place of the
+// configured tailnet address, and returns both listeners' URLs once they listen.
 const startServe = async (configPath: string) => {
   const child = Bun.spawn(
-    [process.execPath, `${import.meta.dir}/main.ts`, 'serve', '--config', configPath],
+    [
+      process.execPath,
+      `${import.meta.dir}/testing/serve-with-loopback-admin.ts`,
+      'serve',
+      '--config',
+      configPath,
+    ],
     { env: plainEnvironment, stderr: 'pipe', stdout: 'pipe' },
   );
   const lines = linesOf(child.stdout)[Symbol.asyncIterator]();
-  const listening = await readUntil(lines, / info Listening on /u);
+  const listening = await readUntil(lines, / info Listening on \S+ for \/stub\/mcp\.$/u);
   const base = /Listening on (\S+) for \/stub\/mcp\.$/u.exec(listening)?.[1] ?? '';
-  return { base, child, lines };
+  const adminListening = await readUntil(lines, / info Listening on \S+ for the Approval page /u);
+  const admin =
+    /Listening on (\S+) for the Approval page at https:\/\/modgud\.example\.ts\.net\/authorize\.$/u.exec(
+      adminListening,
+    )?.[1] ?? '';
+  return { admin, base, child, lines };
 };
 
 test('serve answers MCP on the configured Service path and ends its Sessions on SIGTERM', async () => {
@@ -176,4 +189,45 @@ test('serve opens the configured store and serves the OAuth endpoints and access
   }
   await readUntil(lines, / info Stopped\.$/u);
   expect(await child.exited).toBe(143);
+});
+
+test('serve answers the Approval page on the Admin listener, only for its configured host', async () => {
+  const { configPath } = await writeServeConfig('admin');
+  const { admin, child, lines } = await startServe(configPath);
+  try {
+    const misdirected = await fetch(new URL('authorize', admin));
+    const page = await fetch(new URL('authorize?client_id=unknown', admin), {
+      headers: { Host: 'modgud.example.ts.net' },
+    });
+    const elsewhere = await fetch(new URL('oauth/token', admin), {
+      headers: { Host: 'modgud.example.ts.net' },
+    });
+
+    expect(admin).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/u);
+    expect(misdirected.status).toBe(421);
+    expect(page.status).toBe(400);
+    expect(page.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    expect(await page.text()).toContain('Remove the connector from the client and add it again');
+    expect(elsewhere.status).toBe(404);
+  } finally {
+    child.kill('SIGTERM');
+  }
+  await readUntil(lines, / info Stopped\.$/u);
+  expect(await child.exited).toBe(143);
+});
+
+test('serve refuses to start when the Admin listener cannot listen, naming its address', async () => {
+  // 100.127.255.254 is a tailnet-range address this host does not have.
+  const { configPath } = await writeServeConfig('unbound');
+  const text = await Bun.file(configPath).text();
+  await writeFile(configPath, text.replace('host = "100.64.0.1"', 'host = "100.127.255.254"'));
+  const child = Bun.spawn(
+    [process.execPath, `${import.meta.dir}/main.ts`, 'serve', '--config', configPath],
+    { env: plainEnvironment, stderr: 'pipe', stdout: 'pipe' },
+  );
+
+  const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+
+  expect(exitCode).not.toBe(0);
+  expect(stderr).toContain('Could not listen on 100.127.255.254:0');
 });

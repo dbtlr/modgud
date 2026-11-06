@@ -1,5 +1,7 @@
 import { isIPv6 } from 'node:net';
 
+import { ipv6Groups } from './ip-address.ts';
+
 // A sliding-window count of events per key: at most `limit` in any
 // `windowMs`. Memory stays bounded by the events recorded within one window.
 export const createWindowLimit = ({
@@ -37,24 +39,6 @@ export const createWindowLimit = ({
       return oldestCounted === undefined ? 0 : oldestCounted + windowMs - now();
     },
   };
-};
-
-// The 16-bit groups written in one side of an IPv6 address's `::`.
-const hexGroups = (part: string) =>
-  part === '' ? [] : part.split(':').map((group) => parseInt(group, 16));
-
-// The eight 16-bit groups of an IPv6 address, written in any valid form.
-const ipv6Groups = (address: string): number[] => {
-  let text = address;
-  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/u.exec(text);
-  if (dotted !== null) {
-    const [a = 0, b = 0, c = 0, d = 0] = dotted.slice(1).map(Number);
-    text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
-  }
-  const [head = '', tail] = text.split('::');
-  const front = hexGroups(head);
-  const back = tail === undefined ? [] : hexGroups(tail);
-  return [...front, ...Array.from({ length: 8 - front.length - back.length }, () => 0), ...back];
 };
 
 // The key a registration source counts under: an IPv4 address as is, an IPv6

@@ -115,3 +115,63 @@ export const isClientIdMetadataUrl = (clientId: string) => {
 // is public, and a registered client by a short prefix of its identifier.
 export const clientLabel = (clientId: string) =>
   isClientIdMetadataUrl(clientId) ? new URL(clientId).host : clientId.slice(0, 8);
+
+// Whether a token endpoint authentication method list allows a public client.
+const allowsPublicClient = (document: Record<string, unknown>) => {
+  const methods = document.token_endpoint_auth_methods_supported;
+  if (methods !== undefined) {
+    return isStringList(methods) && methods.includes('none');
+  }
+  const method = document.token_endpoint_auth_method;
+  return method === undefined || method === 'none';
+};
+
+// Validates a Client ID Metadata Document fetched from `clientId`: its
+// `client_id` is that URL, its `client_name` and `redirect_uris` follow the
+// registration rules, it allows a public client, and it has no
+// `client_secret`. Undefined when it fails any of them.
+export const parseMetadataDocument = (
+  clientId: string,
+  document: unknown,
+): ClientMetadata | undefined => {
+  if (
+    !isRecord(document) ||
+    document.client_id !== clientId ||
+    Object.hasOwn(document, 'client_secret') ||
+    !allowsPublicClient(document)
+  ) {
+    return undefined;
+  }
+  const metadata = parseClientMetadata(document);
+  if (!metadata.ok) {
+    return undefined;
+  }
+  const { clientName, redirectUris } = metadata;
+  return { redirectUris, ...(clientName === undefined ? {} : { clientName }) };
+};
+
+// An `http` loopback redirect URI split around its port, so two that differ
+// only in the port compare equal (RFC 8252 §7.3).
+const LOOPBACK_REDIRECT = /^(http:\/\/(?:127\.0\.0\.1|\[::1\]|localhost))(?::\d+)?([/?].*)?$/su;
+
+const withoutLoopbackPort = (uri: string) => {
+  const parts = LOOPBACK_REDIRECT.exec(uri);
+  return parts === null || !isRedirectUri(uri) ? undefined : `${parts[1] ?? ''}${parts[2] ?? ''}`;
+};
+
+// The redirect URI an authorization request sends its answer to: the
+// requested one when it equals a registered one, or is a loopback URI that
+// differs from one only in its port; else, when the request names none, the
+// client's only registered one. Undefined when nothing matches.
+export const matchRedirectUri = (registered: readonly string[], requested: string | undefined) => {
+  if (requested === undefined) {
+    return registered.length === 1 ? registered[0] : undefined;
+  }
+  if (registered.includes(requested)) {
+    return requested;
+  }
+  const portless = withoutLoopbackPort(requested);
+  return portless !== undefined && registered.some((uri) => withoutLoopbackPort(uri) === portless)
+    ? requested
+    : undefined;
+};

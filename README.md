@@ -8,7 +8,7 @@ Status: in build. `modgud serve` serves stdio MCP servers over Streamable HTTP t
 
 ## Running Modgud
 
-`modgud serve` reads `~/.config/modgud/modgud.toml`, or the file that `--config` or `MODGUD_CONFIG` names. It serves each configured Service at `/<service>/mcp` on the Public listener until it receives SIGTERM or SIGINT. On shutdown it ends every Session and stops every Child.
+`modgud serve` reads `~/.config/modgud/modgud.toml`, or the file that `--config` or `MODGUD_CONFIG` names. It serves each configured Service at `/<service>/mcp` on the Public listener, and the OAuth Approval page at `/authorize` on the Admin listener, until it receives SIGTERM or SIGINT. On shutdown it ends every Session, stops every Child, and stops both listeners.
 
 ```toml
 [harness]
@@ -57,7 +57,7 @@ token=$(openssl rand -hex 32)
 printf '%s' "$token" | sha256sum
 ```
 
-To connect a chat client such as claude.ai or ChatGPT, add `<public.base_url>/<service>/mcp` as a connector. When the client opens the Approval page on the tailnet, run `modgud pair` on the host and enter the code it prints. A code approves one connection and expires after 10 minutes (`--minutes` sets 1 to 60). `modgud revoke` revokes every connection approved so far. [docs/oauth.md](docs/oauth.md) specifies the OAuth server.
+To connect a chat client such as claude.ai or ChatGPT, add `<public.base_url>/<service>/mcp` as a connector. When the client opens the Approval page on the tailnet, check the host it names, run `modgud pair` on the host, and enter the code it prints. The Admin listener answers only requests for the host of `admin.base_url`, so the proxy in front of it must pass the `Host` header through. A code approves one connection and expires after 10 minutes (`--minutes` sets 1 to 60). `modgud revoke` revokes every connection approved so far. [docs/oauth.md](docs/oauth.md) specifies the OAuth server.
 
 Each Session gets its own Child process. The Child's environment holds only `HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `TMPDIR`, `TZ`, and `USER` from Modgud's own environment, plus the Service's `env`. A Session ends when the Caller deletes it, when it has no traffic in either direction for the Service's idle timeout, when its Child exits or writes a single line larger than 10 MiB, or when its Child does not answer `initialize` within 30 seconds. Modgud skips a shorter stdout line that is not JSON, and logs and skips one that is JSON but not JSON-RPC. A request still in flight does not keep a Session open.
 
