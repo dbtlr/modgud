@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { createServer } from 'node:https';
 import type { Server } from 'node:https';
 import type { AddressInfo } from 'node:net';
+import { join } from 'node:path';
 import type { TLSSocket } from 'node:tls';
 
 import type { Connect } from './metadata-document.ts';
@@ -14,13 +15,8 @@ const seen: Seen[] = [];
 let server: Server;
 let port = 0;
 const proxyVariables = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY'];
-const savedProxy = new Map(proxyVariables.map((name) => [name, process.env[name]]));
 
 beforeAll(async () => {
-  // A proxy that is not there: a connection that used it would fail.
-  for (const name of proxyVariables) {
-    process.env[name] = 'http://127.0.0.1:9';
-  }
   server = createServer({ cert: CERTIFICATE, key: PRIVATE_KEY }, (request, response) => {
     const socket = request.socket as TLSSocket & { servername?: string };
     seen.push({
@@ -45,13 +41,6 @@ beforeAll(async () => {
 
 afterAll(() => {
   server.close();
-  for (const [name, value] of savedProxy) {
-    if (value === undefined) {
-      delete process.env[name];
-    } else {
-      process.env[name] = value;
-    }
-  }
 });
 
 const text = async (body: AsyncIterable<Uint8Array>) => {
@@ -65,10 +54,10 @@ const text = async (body: AsyncIterable<Uint8Array>) => {
 // The test server's port is known only once it listens.
 const connect: Connect = async (request) => pinnedHttpsConnect({ ca: CERTIFICATE, port })(request);
 
-test('connects to the checked address, never resolving the name, with the URL host as TLS server name and Host, ignoring proxy settings', async () => {
+test('connects to the checked address, never resolving the name, with the URL host as TLS server name and Host', async () => {
   seen.length = 0;
   // metadata.example is reserved and resolves nowhere, so only the address
-  // given can have been reached; the proxy variables name a closed port.
+  // given can have been reached.
   const response = await connect({
     address: '127.0.0.1',
     signal: new AbortController().signal,
@@ -86,6 +75,29 @@ test('connects to the checked address, never resolving the name, with the URL ho
       servername: METADATA_HOST,
     },
   ]);
+});
+
+// The proxy variables are set only in a separate process: once set in the test
+// runner, Bun's fetch keeps using them for later test files even after they are
+// restored.
+test('ignores proxy settings in its environment', async () => {
+  seen.length = 0;
+  const child = Bun.spawn(
+    ['bun', join(import.meta.dir, 'testing', 'pinned-connect.ts'), String(port)],
+    {
+      env: {
+        ...process.env,
+        ...Object.fromEntries(proxyVariables.map((name) => [name, 'http://127.0.0.1:9'])),
+      },
+      stderr: 'pipe',
+      stdout: 'pipe',
+    },
+  );
+  const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+
+  expect(exitCode).toBe(0);
+  expect(JSON.parse(output)).toEqual({ body: '{"client_id":"x"}', status: 200 });
+  expect(seen.map(({ path }) => path)).toEqual(['/client.json']);
 });
 
 test("verifies the certificate against the URL's host, not the address", async () => {
