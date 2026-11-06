@@ -70,7 +70,7 @@ A Session is bound to the credential source that opened it: the static token, or
 
 `POST /oauth/register` takes an RFC 7591 JSON body of at most 16 KiB.
 
-- `redirect_uris` is required: 1 to 10 URIs, each at most 2,048 characters. Each is an absolute `https` URI whose host is a domain name, or an `http` URI whose host is `127.0.0.1`, `[::1]`, or `localhost`. None has a fragment or userinfo.
+- `redirect_uris` is required: 1 to 10 URIs, each at most 2,048 characters. Each is an absolute `https` URI whose host is a domain name of letters, digits, and hyphens, with no label starting or ending in a hyphen, no label over 63 characters, and no trailing dot, or an `http` URI whose host is `127.0.0.1`, `[::1]`, or `localhost`. None has a fragment or userinfo.
 - `client_name` is optional, at most 100 characters.
 - `grant_types`, when present, must include `authorization_code`; `response_types`, when present, must include `code`.
 - Any requested `token_endpoint_auth_method` is accepted and registered as `none`, and the response says so. A requested `scope` is ignored.
@@ -181,11 +181,11 @@ Every single-use step is atomic: spending a Pairing code, spending an authorizat
 
 Modgud keeps registrations, unspent Pairing codes, authorizations, authorization codes, and tokens in one SQLite database at `store.path`. Every Pairing code, authorization code, and token is stored only as its SHA-256 hash; a refresh token's family is stored as is. Expired rows are deleted at least hourly. A spent authorization code is kept while its authorization lives, so a replay of it is still detected. The server reads the store on every request, so a change that `modgud pair` or `modgud revoke` writes takes effect on the next request, without a restart. Everything in the store survives a restart; pending requests, which live in memory, do not.
 
-Whenever Modgud or a command opens the store, it checks the store's directory and file before reading. It creates an absent directory with mode 0700. It refuses to start when an existing directory is writable by group or others, or owned by another account. It sets the file, and SQLite's `-wal`, `-shm`, and `-journal` files beside it, to mode 0600, logging a warning when an existing mode was wider, and refuses to start when it cannot.
+Whenever Modgud or a command opens the store, it checks the store's directory and file before reading. It refuses to start when `store.path` is a symbolic link. It creates an absent directory with mode 0700. It refuses to start when an existing directory is writable by group or others, or owned by another account. It sets the file, and SQLite's `-wal`, `-shm`, and `-journal` files beside it, to mode 0600, logging a warning when an existing mode was wider, and refuses to start when it cannot.
 
 ## Logging
 
-Modgud never logs a Pairing code, an authorization code, a token, a refresh-token family, an `Authorization` header, or a `Location` header. It logs registrations, approvals, denials, failed Pairing codes, the Pairing code throttle, metadata fetch limits, replay revocations, and `modgud revoke`. It names a registered client and an authorization by a short prefix of their identifiers, and a metadata-document client by its host. Refused registrations are not logged, so a flood cannot fill the log.
+Modgud never logs a Pairing code, an authorization code, a token, a refresh-token family, an `Authorization` header, or a `Location` header. It logs registrations, approvals, denials, failed Pairing codes, the Pairing code throttle, metadata fetch limits, replay revocations, and `modgud revoke`. It names a registered client and an authorization by a short prefix of their identifiers, and a metadata-document client by its host. Refused registrations are not logged, so a flood cannot fill the log. A request that fails unexpectedly gets a plain HTTP 500, and the log names the error without a stack trace.
 
 ## Commands
 

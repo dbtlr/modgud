@@ -7,6 +7,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 
 import { sha256Hex } from './bearer.ts';
 import { s256Challenge } from './pkce.ts';
+import { listen } from './serve.ts';
 import { openStore } from './store.ts';
 
 const directory = await mkdtemp(join(tmpdir(), 'modgud-serve-'));
@@ -230,4 +231,33 @@ test('serve refuses to start when the Admin listener cannot listen, naming its a
 
   expect(exitCode).not.toBe(0);
   expect(stderr).toContain('Could not listen on 100.127.255.254:0');
+});
+
+test('a listener answers an error that escapes its handler with a plain HTTP 500, not Bun’s error page', async () => {
+  const lines: string[] = [];
+  const log = {
+    info: (line: string) => lines.push(line),
+    warn: (line: string) => lines.push(line),
+  };
+  const server = listen(
+    {
+      fetch: () => Promise.reject(new Error('store exploded at /secret/path')),
+      host: '127.0.0.1',
+      idleTimeout: 5,
+      log,
+      port: 0,
+    },
+    (message) => {
+      throw new Error(message);
+    },
+  );
+  try {
+    const response = await fetch(server.url);
+    expect(response.status).toBe(500);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.text()).toBe('Internal Server Error');
+    expect(lines).toEqual(['Answered a request with HTTP 500: store exploded at /secret/path']);
+  } finally {
+    await server.stop(true);
+  }
 });

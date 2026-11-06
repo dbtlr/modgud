@@ -22,7 +22,7 @@ const ADMIN_IDLE_SECONDS = 30;
 // Each listener answers its own failures with a plain HTTP 500; Bun's `error`
 // handler does the same for anything that escapes, and `development: false`
 // keeps Bun's error page, with its stack and paths, out of every answer.
-const listen = (
+export const listen = (
   {
     fetch,
     host,
