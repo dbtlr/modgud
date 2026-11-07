@@ -118,7 +118,19 @@ const configSchema = z
   .refine((config) => Object.hasOwn(config.services, config.harness.service), {
     message: 'Name a configured Service.',
     path: ['harness', 'service'],
-  });
+  })
+  // Both listeners on loopback must not share a port (ADR-0004). Port 0 asks
+  // the system for a free port, so it never collides.
+  .refine(
+    (config) =>
+      !LOOPBACK_HOSTS.has(config.admin.host) ||
+      config.admin.port === 0 ||
+      config.admin.port !== config.public.port,
+    {
+      message: 'A loopback Admin listener needs a port other than the Public listener’s.',
+      path: ['admin', 'port'],
+    },
+  );
 
 export type Config = z.infer<typeof configSchema>;
 export type ServiceConfig = Config['services'][string];

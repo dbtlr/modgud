@@ -118,7 +118,7 @@ Errors:
 
 The Admin listener serves only `/authorize`. Every other path gets HTTP 404.
 
-- A request whose `Host` header is not the host and port of `admin.base_url`, exactly as configured, gets HTTP 421. This keeps a page that rebinds its own name to the tailnet address from reading or driving the listener.
+- A request whose `Host` header is not the host and port of `admin.base_url`, exactly as configured, gets HTTP 421. This keeps a page that rebinds its own name to the listener's address, tailnet or loopback, from reading or driving the listener.
 - Its pages carry `Cache-Control: no-store`, `Referrer-Policy: same-origin`, and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self' <the redirect URI's origin>; frame-ancestors 'none'`. The redirect URI's origin is listed so the browser follows the redirect after Approve or Deny. CSP cannot name an IP-literal host, so when the redirect URI's host is an IP address, the policy leaves out `form-action`. `same-origin` keeps the `Origin` header on the page's own form POST, which `no-referrer` would turn into `null`, and sends no `Referer` to the client.
 - Every value a client supplied is HTML-escaped. Host names are shown in their ASCII (punycode) form, and control and bidirectional-formatting characters are removed from every shown value.
 
@@ -196,7 +196,8 @@ Both commands read the same configuration file as `modgud serve` and act on its 
 
 ## Limitations
 
-- The Admin listener checks that `admin.host` is a tailnet address by range. 100.64.0.0/10 is also carrier-grade NAT space, so on a host whose uplink uses it, a misconfigured `admin.host` could bind the uplink. The Approval page there still requires a Pairing code.
+- The Admin listener checks that `admin.host` is a tailnet address by range, or loopback. 100.64.0.0/10 is also carrier-grade NAT space, so on a host whose uplink uses it, a misconfigured `admin.host` could bind the uplink. The Approval page there still requires a Pairing code.
+- On loopback, the Admin listener is on the tailnet only through the forward the operator configures in front of it, such as `tailscale serve`. Modgud cannot check that the forward exists or is limited to the tailnet.
 - Browser-based MCP clients cannot connect, because Modgud serves no CORS headers.
 - A client that rejects a scopeless server, or always sends a nonempty `scope`, cannot connect.
 - An attacker with many source addresses can keep the overall registration limit full, which blocks dynamic registration. Connections that use a metadata document are unaffected. claude.ai and ChatGPT use one when Modgud advertises it, unless a connection is set up for dynamic registration.

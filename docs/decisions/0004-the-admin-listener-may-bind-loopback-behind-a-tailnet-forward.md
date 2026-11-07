@@ -17,6 +17,8 @@ ADR-0003 requires the Admin listener to bind a tailnet address, and Modgud refus
 
 - The Admin listener binds a tailnet address (100.64.0.0/10 or fd7a:115c:a1e0::/48) or a loopback address (`127.0.0.1`, `::1`, or `localhost`). Modgud refuses any other.
 - A loopback Admin listener is reached through a tailnet forward, such as `tailscale serve`, that the operator configures. The TLS-terminating proxy in front of `admin.base_url` reaches it through that forward and passes the `Host` header through, as ADR-0003 requires.
+- `localhost` binds only the first address it resolves to, often `::1`, so a forward to `127.0.0.1` would miss it. Configure the exact address the forward targets.
+- A loopback Admin listener must not share the Public listener's port, and Modgud refuses to bind a host and port another server holds. Without that, the operating system would split one port's traffic between the two listeners.
 - This replaces only ADR-0003's binding rule. Its principle stands: anything a person clicks lives on the tailnet. The two-listener split, the `Host` check, and taking public addresses from configuration are unchanged.
 
 ## Considered options
@@ -26,7 +28,7 @@ ADR-0003 requires the Admin listener to bind a tailnet address, and Modgud refus
 
 ## Consequences
 
-On loopback, the guarantee that the Approval page is reachable only from the tailnet comes from the operator's forward, not from Modgud's bind. Modgud cannot tell whether the forward exists or is tailnet-only. Any local process on the host can reach a loopback Admin listener, as it can the Public listener. That is within the trust boundary ADR-0002 sets at the OS account. The Approval page still requires a Pairing code, and it refuses any `Host` but `admin.base_url`'s.
+On loopback, the guarantee that the Approval page is reachable only from the tailnet comes from the operator's forward, not from Modgud's bind. Modgud cannot tell whether the forward exists or is tailnet-only. Every local process on the host, under any OS account, can reach a loopback Admin listener. That is not new: they could already reach one bound to the host's tailnet address. The Approval page still requires a Pairing code, and it refuses any `Host` but `admin.base_url`'s.
 
 The Admin listener sees the forward's address as every request's peer. Nothing on it depends on the peer address: the Pairing-code throttle counts failures across all requests.
 

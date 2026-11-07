@@ -204,6 +204,15 @@ describe('parseConfig', () => {
     }
   });
 
+  test('refuses a loopback Admin listener on the Public listener port, naming the setting', () => {
+    expect(() =>
+      parseConfig(configWith({ 'admin.host': '"127.0.0.1"', 'admin.port': '8470' })),
+    ).toThrow(/admin\.port/u);
+    expect(
+      parseConfig(configWith({ 'admin.host': '"127.0.0.1"', 'admin.port': '8471' })).admin.port,
+    ).toBe(8471);
+  });
+
   test('refuses an Admin listener host neither on the tailnet nor loopback, naming the setting', () => {
     for (const host of [
       '100.63.255.255',
