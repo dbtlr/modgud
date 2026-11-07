@@ -131,8 +131,21 @@ export const createOAuthEndpoints = ({
   const namesClient = (clientId: string) =>
     isClientIdMetadataUrl(clientId) || store.findClient(clientId) !== undefined;
 
-  const tokenResponse = (result: TokenResult, clientId: string, presented: string) => {
+  const tokenResponse = (
+    result: TokenResult,
+    {
+      clientId,
+      presented,
+      resource,
+    }: { clientId: string; presented: string; resource: string | undefined },
+  ) => {
     if (result.ok) {
+      log.info(
+        `Issued tokens to client ${loggable(clientLabel(clientId))} for authorization ${result.tokens.authorizationId.slice(
+          0,
+          8,
+        )} from the ${presented}, resource ${resource === undefined ? 'absent' : 'sent'}.`,
+      );
       return Response.json({
         access_token: result.tokens.accessToken,
         expires_in: result.tokens.expiresIn,
@@ -190,7 +203,7 @@ export const createOAuthEndpoints = ({
         redirectUri: parameter('redirect_uri'),
         resource,
       });
-      return tokenResponse(result, clientId, 'authorization code');
+      return tokenResponse(result, { clientId, presented: 'authorization code', resource });
     }
     if (grantType === 'refresh_token') {
       const refreshToken = parameter('refresh_token');
@@ -201,7 +214,7 @@ export const createOAuthEndpoints = ({
         return oauthError('invalid_client');
       }
       const result = store.refresh({ clientId, refreshToken, resource });
-      return tokenResponse(result, clientId, 'refresh token');
+      return tokenResponse(result, { clientId, presented: 'refresh token', resource });
     }
     return oauthError(grantType === undefined ? 'invalid_request' : 'unsupported_grant_type');
   };

@@ -6,6 +6,7 @@ import {
 
 import { bearerToken, matchesTokenHash } from './bearer.ts';
 import { childEnvironment } from './child-environment.ts';
+import { clientLabel } from './client-metadata.ts';
 import { serviceResource } from './config.ts';
 import type { Config, ServiceConfig } from './config.ts';
 import { answerUnexpectedError } from './http.ts';
@@ -39,6 +40,17 @@ export const AUTHORIZATION_SWEEP_MS = 2000;
 
 // How often Modgud deletes expired rows from the store.
 export const STORE_CLEANUP_MS = 60 * 60_000;
+
+// The longest Origin or protocol version a log line carries.
+const ORIGIN_LOG_LIMIT = 200;
+const PROTOCOL_LOG_LIMIT = 64;
+
+const STATIC_TOKEN_CALLER = 'the static bearer token';
+
+// A caller-controlled string as a log line may carry it: its first `limit`
+// code points, with control characters escaped.
+// oxlint-disable-next-line typescript/no-misused-spread -- code points, as loggable counts them
+const logged = (text: string, limit: number) => loggable([...text].slice(0, limit).join(''));
 
 const SERVICE_PATH = /^\/([a-z][a-z0-9-]*)\/mcp$/u;
 
@@ -162,13 +174,13 @@ export const createPublicListener = ({
     every(storeCleanupMs, () => store.removeExpired(), 'delete expired rows from the store'),
   ];
 
-  // The Grant the request's credential derives from: `valid` with it, or
-  // `missing` without a bearer token, or `invalid` when the bearer token is
-  // not valid for this Service.
+  // The Grant the request's credential derives from: `valid` with it and the
+  // caller as a log line names it, or `missing` without a bearer token, or
+  // `invalid` when the bearer token is not valid for this Service.
   const authenticate = (
     request: Request,
     serviceName: string,
-  ): { result: 'valid'; grant: Grant } | { result: 'invalid' | 'missing' } => {
+  ): { result: 'valid'; grant: Grant; caller: string } | { result: 'invalid' | 'missing' } => {
     const token = bearerToken(request.headers.get('authorization'));
     if (token === undefined) {
       return { result: 'missing' };
@@ -176,6 +188,7 @@ export const createPublicListener = ({
     if (matchesTokenHash(token, config.harness.bearer_token_sha256)) {
       return config.harness.service === serviceName
         ? {
+            caller: STATIC_TOKEN_CALLER,
             grant: { id: STATIC_TOKEN_GRANT_ID, identity: undefined, service: serviceName },
             result: 'valid',
           }
@@ -186,6 +199,7 @@ export const createPublicListener = ({
       return { result: 'invalid' };
     }
     return {
+      caller: `client ${loggable(clientLabel(access.clientId))} authorization ${access.authorizationId.slice(0, 8)}`,
       grant: {
         id: `${AUTHORIZATION_GRANT_PREFIX}${access.authorizationId}`,
         identity: undefined,
@@ -229,7 +243,11 @@ export const createPublicListener = ({
     return session;
   };
 
-  const initialize = async (request: Request, serviceName: string, grant: Grant) => {
+  const initialize = async (
+    request: Request,
+    serviceName: string,
+    { caller, grant }: { caller: string; grant: Grant },
+  ) => {
     if (!isJsonContentType(request.headers.get('content-type'))) {
       return jsonRpcError(
         415,
@@ -282,9 +300,34 @@ export const createPublicListener = ({
     if (!session.initialized) {
       await session.end('not initialized');
     } else if (!session.ended) {
-      log.info(`${serviceName} session ${session.id.slice(0, 8)} opened.`);
+      const origin = request.headers.get('origin');
+      log.info(
+        `${serviceName} session ${session.id.slice(0, 8)} opened for ${caller}, Origin ${
+          origin === null ? 'none' : logged(origin, ORIGIN_LOG_LIMIT)
+        }, protocol ${logged(parsed.params.protocolVersion, PROTOCOL_LOG_LIMIT)}.`,
+      );
     }
     return response;
+  };
+
+  // Warns of a request refused for its Origin, only when its credential is
+  // valid, so an anonymous flood cannot fill the log. The 403 stands even when
+  // the store cannot be read.
+  const warnOfRefusedOrigin = (request: Request, serviceName: string, origin: string) => {
+    let authentication: ReturnType<typeof authenticate>;
+    try {
+      authentication = authenticate(request, serviceName);
+    } catch {
+      return;
+    }
+    if (authentication.result === 'valid') {
+      log.warn(
+        `Refused a ${serviceName} request from ${authentication.caller}: Origin ${logged(
+          origin,
+          ORIGIN_LOG_LIMIT,
+        )} is not allowed.`,
+      );
+    }
   };
 
   const serviceRequest = async (request: Request): Promise<Response> => {
@@ -295,6 +338,7 @@ export const createPublicListener = ({
     // A browser page on another site must not drive a Service (DNS rebinding).
     const origin = request.headers.get('origin');
     if (origin !== null && !allowedOrigins.has(origin)) {
+      warnOfRefusedOrigin(request, serviceName, origin);
       return jsonRpcError(403, -32_000, 'Forbidden: Origin not allowed');
     }
     const authentication = authenticate(request, serviceName);
@@ -305,7 +349,7 @@ export const createPublicListener = ({
     const sessionId = request.headers.get('mcp-session-id');
     if (sessionId === null) {
       return request.method === 'POST'
-        ? initialize(request, serviceName, grant)
+        ? initialize(request, serviceName, authentication)
         : jsonRpcError(400, -32_000, 'Bad Request: Mcp-Session-Id header is required');
     }
     const session = sessions.get(sessionId);
