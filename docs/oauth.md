@@ -64,7 +64,7 @@ WWW-Authenticate: Bearer resource_metadata="<public.base_url>/.well-known/oauth-
 
 When the request carried a bearer token that is not valid here (unknown, expired, revoked, or issued for another Service), the header also carries `error="invalid_token"`.
 
-A Session is bound to the credential source that opened it: the static token, or one authorization. A request on the Session that carries a valid credential from any other source gets the same HTTP 404 as an unknown Session ([ADR-0002](decisions/0002-one-child-per-session-identity-enters-through-the-environment.md)). When an authorization is revoked or expires, Modgud ends every Session bound to it, with its open streams and its Child, within 10 seconds, including when `modgud revoke` made the change.
+A Session is bound to the credential source that opened it: the static token, or one authorization. A request on the Session that carries a valid credential from any other source gets the same HTTP 404 as an unknown Session ([ADR-0002](decisions/0002-each-grant-shares-one-child-identity-enters-through-the-environment.md)). When an authorization is revoked or expires, Modgud ends every Session bound to it, with its open streams, and stops its Child within 10 seconds, including when `modgud revoke` made the change.
 
 ### Dynamic client registration
 

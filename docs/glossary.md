@@ -49,9 +49,9 @@ One approved chat-client connection: a client, the redirect URI it was approved 
 _Avoid_: Consent, login
 
 **Session**:
-One MCP session between a Caller and a Service under one Grant, from `initialize` until the Caller deletes it, it idles out, its Grant is revoked or expires, or its Child exits. Modgud gives each Session its own Child.
+One MCP session between a Caller and a Service under one Grant, from `initialize` until the Caller deletes it, it idles out, it is evicted, or its Grant is revoked or expires. It outlives the Child that serves it.
 _Avoid_: Connection, conversation
 
 **Child**:
-The Service process Modgud starts for one Session, with the Grant's Identity in its environment.
+The Service process Modgud runs for one Grant, started on demand and shared by every Session of that Grant, with the Grant's Identity in its environment.
 _Avoid_: Worker, instance
