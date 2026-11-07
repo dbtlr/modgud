@@ -514,6 +514,24 @@ describe('the token endpoint, authorization_code grant', () => {
     expect(store.verifyAccessToken(body.access_token)?.resource).toBe(RESOURCE);
   });
 
+  test('logs each issue with the client, the authorization, the grant, and whether resource was sent', async () => {
+    const clientId = registeredClient();
+    const { authorizationId, code } = approve(clientId);
+    const prefix = authorizationId.slice(0, 8);
+    const label = clientId.slice(0, 8);
+
+    const exchanged = (await (await exchange(clientId, code)).json()) as Tokens;
+    const refreshed = (await (await refresh(clientId, exchanged.refresh_token)).json()) as Tokens;
+    await refresh(clientId, refreshed.refresh_token, { resource: RESOURCE });
+    await refresh(clientId, 'mdg_rt_unknown');
+
+    expect(lines).toEqual([
+      `Issued tokens to client ${label} for authorization ${prefix} from the authorization code, resource absent.`,
+      `Issued tokens to client ${label} for authorization ${prefix} from the refresh token, resource absent.`,
+      `Issued tokens to client ${label} for authorization ${prefix} from the refresh token, resource sent.`,
+    ]);
+  });
+
   test('ignores client_assertion, client_assertion_type, and client_secret', async () => {
     const clientId = registeredClient();
     const { code } = approve(clientId);
@@ -638,7 +656,9 @@ describe('the token endpoint, authorization_code grant', () => {
     expect(await errorOf(replay)).toBe('invalid_grant');
     expect(store.verifyAccessToken(tokens.access_token)).toBeUndefined();
     expect(store.isAuthorizationActive(authorizationId)).toBe(false);
-    const logged = lines.filter((line) => line.includes(authorizationId.slice(0, 8)));
+    const logged = lines.filter(
+      (line) => line.includes(authorizationId.slice(0, 8)) && !line.startsWith('Issued tokens'),
+    );
     expect(logged).toHaveLength(1);
     expect(logged[0]).toContain('authorization code');
     expect(lines.some((line) => line.includes(authorizationId) || line.includes(code))).toBe(false);
@@ -683,7 +703,9 @@ describe('the token endpoint, refresh_token grant', () => {
 
     expect(await errorOf(replay)).toBe('invalid_grant');
     expect(await errorOf(await refresh(clientId, rotated.refresh_token))).toBe('invalid_grant');
-    const logged = lines.filter((line) => line.includes(authorizationId.slice(0, 8)));
+    const logged = lines.filter(
+      (line) => line.includes(authorizationId.slice(0, 8)) && !line.startsWith('Issued tokens'),
+    );
     expect(logged).toHaveLength(1);
     expect(logged[0]).toContain('refresh token');
     const family = tokens.refresh_token.slice('mdg_rt_'.length, 'mdg_rt_'.length + 43);

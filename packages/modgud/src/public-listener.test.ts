@@ -81,7 +81,7 @@ const connectOAuthClient = (store: Store) => {
   if (!result.ok) {
     throw new Error(`The exchange failed: ${result.error}`);
   }
-  return result.tokens;
+  return { ...result.tokens, clientId };
 };
 
 // Serves the stub Service as `stub`, the harness's Service, and again as
@@ -726,6 +726,25 @@ describe('refusals', () => {
     expect(allowed.status).toBe(200);
   });
 
+  test('warns of a refused Origin only for a caller with a valid credential', async () => {
+    const { lines, store, url } = await start({ origins: ['https://claude.ai'] });
+    const { accessToken, authorizationId, clientId } = connectOAuthClient(store);
+    const foreign = { Origin: 'https://evil.test' };
+
+    await post(url, foreign);
+    await post(url, { ...foreign, Authorization: 'Bearer wrong' });
+    expect(lines).toEqual([]);
+    const staticToken = await post(url, { ...foreign, Authorization: `Bearer ${TOKEN}` });
+    const oauth = await post(url, { ...foreign, Authorization: `Bearer ${accessToken}` });
+
+    expect(staticToken.status).toBe(403);
+    expect(oauth.status).toBe(403);
+    expect(lines).toEqual([
+      'Refused a stub request from the static bearer token: Origin https://evil.test is not allowed.',
+      `Refused a stub request from client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}: Origin https://evil.test is not allowed.`,
+    ]);
+  });
+
   test('a request other than initialize without a session id gets 400 and starts no Child', async () => {
     const { listener, url } = await start();
 
@@ -762,6 +781,35 @@ describe('a Caller with an OAuth access token', () => {
     expect(initialize.status).toBe(200);
     expect(initialize.headers.get('cache-control')).toBe('no-store');
     await initialize.body?.cancel();
+  });
+
+  test('logs which client opened a Session, with its Origin and requested protocol revision', async () => {
+    const { lines, store, url } = await start({ origins: ['https://claude.ai'] });
+    const { accessToken, authorizationId, clientId } = connectOAuthClient(store);
+
+    const oauth = await post(url, {
+      Authorization: `Bearer ${accessToken}`,
+      Origin: 'https://claude.ai',
+    });
+    const staticToken = await post(url, { Authorization: `Bearer ${TOKEN}` });
+
+    expect(oauth.status).toBe(200);
+    expect(staticToken.status).toBe(200);
+    const opened = lines.filter((line) => line.includes(' opened'));
+    expect(opened).toEqual([
+      expect.stringMatching(
+        new RegExp(
+          `^stub session \\w{8} opened for client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}, Origin https://claude\\.ai, protocol 2025-11-25\\.$`,
+          'u',
+        ),
+      ),
+      expect.stringMatching(
+        /^stub session \w{8} opened for the static bearer token, Origin none, protocol 2025-11-25\.$/u,
+      ),
+    ]);
+    expect(lines.join('\n')).not.toContain(accessToken);
+    await oauth.body?.cancel();
+    await staticToken.body?.cancel();
   });
 
   test("gets 401 with invalid_token at another Service's path", async () => {

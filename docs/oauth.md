@@ -185,7 +185,7 @@ Whenever Modgud or a command opens the store, it checks the store's directory an
 
 ## Logging
 
-Modgud never logs a Pairing code, an authorization code, a token, a refresh-token family, an `Authorization` header, or a `Location` header. It logs registrations, approvals, denials, failed Pairing codes, the Pairing code throttle, metadata fetch limits, replay revocations, and `modgud revoke`. It names a registered client and an authorization by a short prefix of their identifiers, and a metadata-document client by its host. Refused registrations are not logged, so a flood cannot fill the log. A request that fails unexpectedly gets a plain HTTP 500, and the log names the error without a stack trace.
+Modgud never logs a Pairing code, an authorization code, a token, a refresh-token family, an `Authorization` header, or a `Location` header. It logs registrations, approvals, denials, failed Pairing codes, the Pairing code throttle, metadata fetch limits, replay revocations, and `modgud revoke`. It logs each Session open with the caller, the `Origin` header, and the protocol revision the caller requested. It logs a request refused for its `Origin` only when its credential is valid. It logs each token issue, with whether the request sent `resource`. It names a registered client and an authorization by a short prefix of their identifiers, and a metadata-document client by its host. Refused registrations are not logged, and neither are refused `Origin` headers from unauthenticated requests, so a flood cannot fill the log. A request that fails unexpectedly gets a plain HTTP 500, and the log names the error without a stack trace.
 
 ## Commands
 

@@ -109,7 +109,10 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
   );
   const result = await client.callTool({ arguments: { text: 'served' }, name: 'echo' });
   expect(result.content).toEqual([{ text: 'served', type: 'text' }]);
-  await readUntil(lines, / info stub session \w{8} opened\.$/u);
+  await readUntil(
+    lines,
+    / info stub session \w{8} opened for the static bearer token, Origin none, protocol \S+\.$/u,
+  );
 
   child.kill('SIGTERM');
   await readUntil(lines, / info stub session \w{8} ended: shutdown\.$/u);
