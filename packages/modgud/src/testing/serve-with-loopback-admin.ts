@@ -18,13 +18,15 @@ Object.assign(Bun, {
       options.hostname = '127.0.0.1';
     }
     if ('fetch' in options && typeof options.fetch === 'function') {
-      const { fetch } = options;
-      options.fetch = function (this: unknown, request: Request, server: unknown) {
+      // Bun calls `fetch` with the server as `this`, and so does the wrapper.
+      // oxlint-disable-next-line typescript/unbound-method
+      const listenerFetch = options.fetch;
+      options.fetch = (request, server) => {
         if (new URL(request.url).pathname === THROW_PATH) {
           throw new Error('thrown past the listener');
         }
-        return Reflect.apply(fetch, this, [request, server]);
-      } as typeof fetch;
+        return listenerFetch.call(server, request, server);
+      };
     }
     return serve(options);
   },
