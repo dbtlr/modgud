@@ -5,7 +5,7 @@ import { Command } from '@loomcli/core';
 import { createAdminListener } from './admin-listener.ts';
 import { configOption, loadConfig, openConfiguredStore } from './command-config.ts';
 import { internalServerError } from './http.ts';
-import { describeError, loggable, timestampedLog } from './log.ts';
+import { describeError, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { createPublicListener } from './public-listener.ts';
 
@@ -62,14 +62,18 @@ export const listen = (
 // the OAuth endpoints, on the Public listener, and the Approval page on the
 // Admin listener, until systemd or a terminal stops it. Then it ends every
 // Session, stops every Child, stops both listeners, and closes the store. Its
-// runtime lines start with their time.
+// runtime events go to Loom's log; where it listens and that it stopped are
+// also printed for the person who started it.
 export const serve = new Command('serve', {
   description:
     'Serve the configured Services over Streamable HTTP on the Public listener, and the Approval page on the Admin listener.',
 })
   .option('config', configOption)
-  .action(async ({ host, options, out, signal }) => {
-    const log = timestampedLog((line) => out.print(line));
+  .action(async ({ host, log, options, out, signal }) => {
+    const announce = async (message: string) => {
+      log.info(message);
+      await out.print(message);
+    };
     const config = await loadConfig(host, options.config, out);
     const store = await openConfiguredStore(config, host, out);
     const publicListener = createPublicListener({
@@ -111,8 +115,8 @@ export const serve = new Command('serve', {
     );
     try {
       const services = Object.keys(config.services).map((name) => `/${name}/mcp`);
-      log.info(`Listening on ${publicServer.url.href} for ${services.join(', ')}.`);
-      log.info(
+      await announce(`Listening on ${publicServer.url.href} for ${services.join(', ')}.`);
+      await announce(
         `Listening on ${adminServer.url.href} for the Approval page at ${config.admin.base_url}/authorize.`,
       );
       if (!signal.aborted) {
@@ -123,6 +127,6 @@ export const serve = new Command('serve', {
       adminListener.close();
       await Promise.all([publicServer.stop(true), adminServer.stop(true)]);
       store.close();
-      log.info('Stopped.');
+      await announce('Stopped.');
     }
   });

@@ -1,17 +1,9 @@
-// Runtime log lines. Each starts with an ISO 8601 UTC timestamp, as
-// Heimdall's do, so a supervised log reads the same across the fleet.
+// The part of Loom's log that the listeners use. `serve` passes its action's
+// log, and Loom's logging plugin records each event; tests pass a recorder.
 export type Log = {
   info: (message: string) => void;
   warn: (message: string) => void;
 };
-
-export const timestampedLog = (
-  print: (line: string) => void,
-  now: () => Date = () => new Date(),
-): Log => ({
-  info: (message) => print(`${now().toISOString()} info ${message}`),
-  warn: (message) => print(`${now().toISOString()} warn ${message}`),
-});
 
 // C0 controls (below 32), DEL (127), and C1 controls (128 to 159).
 const isControl = (code: number) => code < 32 || (code >= 127 && code < 160);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { s256Challenge } from './pkce.ts';
 import { openStore } from './store.ts';
+import { appEnvironment } from './testing/app-environment.ts';
 
 const directory = await mkdtemp(join(tmpdir(), 'modgud-pair-'));
 afterAll(async () => {
@@ -35,9 +36,7 @@ await writeFile(
   `,
 );
 
-const plainEnvironment = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => name !== 'FORCE_COLOR'),
-);
+const plainEnvironment = appEnvironment(directory);
 
 const run = async (...args: string[]) => {
   const child = Bun.spawn([process.execPath, `${import.meta.dir}/main.ts`, ...args], {

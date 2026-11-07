@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { s256Challenge } from './pkce.ts';
 import { openStore } from './store.ts';
 import type { Store } from './store.ts';
+import { appEnvironment } from './testing/app-environment.ts';
 
 const directory = await mkdtemp(join(tmpdir(), 'modgud-revoke-'));
 afterAll(async () => {
@@ -16,9 +17,7 @@ const RESOURCE = 'https://modgud.example.com/norn/mcp';
 const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
 const VERIFIER = 'a'.repeat(43);
 
-const plainEnvironment = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => name !== 'FORCE_COLOR'),
-);
+const plainEnvironment = appEnvironment(directory);
 
 // A configuration whose store lives at `storePath`.
 const configure = async (name: string, storePath: string) => {

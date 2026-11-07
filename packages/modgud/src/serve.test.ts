@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,23 +9,22 @@ import { sha256Hex } from './bearer.ts';
 import { s256Challenge } from './pkce.ts';
 import { listen } from './serve.ts';
 import { openStore } from './store.ts';
+import { appEnvironment, logPath } from './testing/app-environment.ts';
 
 const directory = await mkdtemp(join(tmpdir(), 'modgud-serve-'));
 afterAll(async () => {
   await rm(directory, { force: true, recursive: true });
 });
 
-const plainEnvironment = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => name !== 'FORCE_COLOR'),
-);
+const plainEnvironment = appEnvironment(directory);
 
-// Reads the child's stdout until a line matches, returning that line.
+// Reads lines until one matches, returning that line.
 const readUntil = async (lines: AsyncIterator<string>, pattern: RegExp) => {
   for (;;) {
     // oxlint-disable-next-line no-await-in-loop -- lines arrive one at a time
     const next = await lines.next();
     if (next.done === true) {
-      throw new Error(`stdout ended before a line matched ${String(pattern)}.`);
+      throw new Error(`The lines ended before one matched ${String(pattern)}.`);
     }
     if (pattern.test(next.value)) {
       return next.value;
@@ -74,9 +73,37 @@ const writeServeConfig = async (name: string, publicSettings = '') => {
   return { configPath, storePath };
 };
 
+// The records Loom's logging plugin writes to `path`, as `<level> <message>`,
+// read as they arrive until `exited` says the process that writes them ended.
+async function* logRecordsOf(path: string, exited: () => boolean) {
+  let seen = 0;
+  for (;;) {
+    const wasFinished = exited();
+    // oxlint-disable-next-line no-await-in-loop -- the file grows while serve runs
+    const text = await readFile(path, 'utf8').catch(() => '');
+    const complete = text
+      .slice(0, text.lastIndexOf('\n') + 1)
+      .split('\n')
+      .slice(0, -1);
+    for (const line of complete.slice(seen)) {
+      const record = JSON.parse(line) as { level: string; message: string };
+      yield `${record.level} ${record.message}`;
+    }
+    seen = complete.length;
+    if (wasFinished) {
+      return;
+    }
+    // oxlint-disable-next-line no-await-in-loop -- polls the file
+    await Bun.sleep(20);
+  }
+}
+
 // Starts `modgud serve`, with its Admin listener on 127.0.0.1 in place of the
-// configured tailnet address, and returns both listeners' URLs once they listen.
+// configured tailnet address and its state directory in the test's directory.
+// It returns both listeners' URLs, which serve prints once they listen, and
+// the records serve logs.
 const startServe = async (configPath: string) => {
+  const scratch = await mkdtemp(join(directory, 'serve-'));
   const child = Bun.spawn(
     [
       process.execPath,
@@ -85,16 +112,23 @@ const startServe = async (configPath: string) => {
       '--config',
       configPath,
     ],
-    { env: plainEnvironment, stderr: 'pipe', stdout: 'pipe' },
+    {
+      env: appEnvironment(scratch),
+      stderr: 'pipe',
+      stdout: 'pipe',
+    },
   );
-  const lines = linesOf(child.stdout)[Symbol.asyncIterator]();
-  const listening = await readUntil(lines, / info Listening on \S+ for \/stub\/mcp\.$/u);
+  const printed = linesOf(child.stdout)[Symbol.asyncIterator]();
+  const listening = await readUntil(printed, /^Listening on \S+ for \/stub\/mcp\.$/u);
   const base = /Listening on (\S+) for \/stub\/mcp\.$/u.exec(listening)?.[1] ?? '';
-  const adminListening = await readUntil(lines, / info Listening on \S+ for the Approval page /u);
+  const adminListening = await readUntil(printed, /^Listening on \S+ for the Approval page /u);
   const admin =
     /Listening on (\S+) for the Approval page at https:\/\/modgud\.example\.ts\.net\/authorize\.$/u.exec(
       adminListening,
     )?.[1] ?? '';
+  const lines = logRecordsOf(logPath(scratch), () => child.exitCode !== null)[
+    Symbol.asyncIterator
+  ]();
   return { admin, base, child, lines };
 };
 
@@ -112,12 +146,12 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
   expect(result.content).toEqual([{ text: 'served', type: 'text' }]);
   await readUntil(
     lines,
-    / info stub session \w{8} opened for the static bearer token, Origin none, protocol \S+\.$/u,
+    /^info stub session \w{8} opened for the static bearer token, Origin none, protocol \S+\.$/u,
   );
 
   child.kill('SIGTERM');
-  await readUntil(lines, / info stub session \w{8} ended: shutdown\.$/u);
-  await readUntil(lines, / info Stopped\.$/u);
+  await readUntil(lines, /^info stub session \w{8} ended: shutdown\.$/u);
+  await readUntil(lines, /^info Stopped\.$/u);
   // Loom exits 143 after SIGTERM, once the action has finished its cleanup.
   expect(await child.exited).toBe(143);
 });
@@ -127,7 +161,7 @@ test('serve starts with the retired public.max_sessions set, and warns that it i
   const { child, lines } = await startServe(configPath);
   try {
     child.kill('SIGTERM');
-    await readUntil(lines, / info Stopped\.$/u);
+    await readUntil(lines, /^info Stopped\.$/u);
     expect(await new Response(child.stderr).text()).toContain(
       `In ${configPath}: public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is 64.`,
     );
@@ -207,7 +241,7 @@ test('serve opens the configured store and serves the OAuth endpoints and access
   } finally {
     child.kill('SIGTERM');
   }
-  await readUntil(lines, / info Stopped\.$/u);
+  await readUntil(lines, /^info Stopped\.$/u);
   expect(await child.exited).toBe(143);
 });
 
@@ -232,7 +266,7 @@ test('serve answers the Approval page on the Admin listener, only for its config
   } finally {
     child.kill('SIGTERM');
   }
-  await readUntil(lines, / info Stopped\.$/u);
+  await readUntil(lines, /^info Stopped\.$/u);
   expect(await child.exited).toBe(143);
 });
 

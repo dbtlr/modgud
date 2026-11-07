@@ -11,6 +11,7 @@
   },
   "devDependencies": {
     "@loomcli/loom": "0.18.0",
+    "@loomcli/testing": "0.18.0",
     "@modelcontextprotocol/client": "2.4.0"
   }
 }
