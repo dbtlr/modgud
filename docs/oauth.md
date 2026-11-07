@@ -64,7 +64,7 @@ WWW-Authenticate: Bearer resource_metadata="<public.base_url>/.well-known/oauth-
 
 When the request carried a bearer token that is not valid here (unknown, expired, revoked, or issued for another Service), the header also carries `error="invalid_token"`.
 
-A Session is bound to the credential source that opened it: the static token, or one authorization. A request on the Session that carries a valid credential from any other source gets the same HTTP 404 as an unknown Session ([ADR-0002](decisions/0002-one-child-per-session-identity-enters-through-the-environment.md)). When an authorization is revoked or expires, Modgud ends every Session bound to it, with its open streams and its Child, within 10 seconds, including when `modgud revoke` made the change.
+A Session is bound to the credential source that opened it: the static token, or one authorization. A request on the Session that carries a valid credential from any other source gets the same HTTP 404 as an unknown Session ([ADR-0002](decisions/0002-each-grant-shares-one-child-identity-enters-through-the-environment.md)). When an authorization is revoked or expires, Modgud ends every Session bound to it, with its open streams, and stops its Child within 10 seconds, including when `modgud revoke` made the change.
 
 ### Dynamic client registration
 
@@ -185,12 +185,12 @@ Whenever Modgud or a command opens the store, it checks the store's directory an
 
 ## Logging
 
-Modgud never logs a Pairing code, an authorization code, a token, a refresh-token family, an `Authorization` header, or a `Location` header. It logs registrations, approvals, denials, failed Pairing codes, the Pairing code throttle, metadata fetch limits, replay revocations, and `modgud revoke`. It logs each Session open with the caller, the `Origin` header, and the protocol revision the caller requested. It logs a request refused for its `Origin` only when its credential is valid. It logs each token issue, with whether the request sent `resource`. It names a registered client and an authorization by a short prefix of their identifiers, and a metadata-document client by its host. Refused registrations are not logged, and neither are refused `Origin` headers from unauthenticated requests, so a flood cannot fill the log. A request that fails unexpectedly gets a plain HTTP 500, and the log names the error without a stack trace.
+Modgud never logs a Pairing code, an authorization code, a token, a refresh-token family, an `Authorization` header, or a `Location` header. It logs registrations, approvals, denials, failed Pairing codes, the Pairing code throttle, metadata fetch limits, replay revocations, and `modgud revoke`. It logs each Session open with the caller, the `Origin` header, and the protocol revision the caller requested, and each Child start and stop with the reason, tagged with the Service and a short Grant label. It logs a request refused for its `Origin` only when its credential is valid. It logs each token issue, with whether the request sent `resource`. It names a registered client and an authorization by a short prefix of their identifiers, and a metadata-document client by its host. Refused registrations are not logged, and neither are refused `Origin` headers from unauthenticated requests, so a flood cannot fill the log. A request that fails unexpectedly gets a plain HTTP 500, and the log names the error without a stack trace.
 
 ## Commands
 
 - `modgud pair` mints a Pairing code, stores its hash with an expiry, and prints the code and when it expires. A code lasts 10 minutes, or `--minutes` from 1 to 60. It approves exactly one authorization.
-- `modgud revoke` deletes every authorization, with every authorization code and token issued from it, and every unspent Pairing code. Registrations stay. It prints how many authorizations it revoked. The server ends the Sessions bound to them within 10 seconds. The static bearer token is revoked by changing its hash in the configuration and restarting.
+- `modgud revoke` deletes every authorization, with every authorization code and token issued from it, and every unspent Pairing code. Registrations stay. It prints how many authorizations it revoked. The server ends the Sessions bound to them and stops their Children within 10 seconds. The static bearer token is revoked by changing its hash in the configuration and restarting.
 
 Both commands read the same configuration file as `modgud serve` and act on its store, so they run as the OS account that runs Modgud.
 
@@ -214,6 +214,6 @@ Observed on 2026-11-07, with claude.ai and ChatGPT developer mode each connected
 - Both send `resource` when they exchange the authorization code.
 - Neither sends an `Origin` header when it opens a Session, and with the default empty `public.allowed_origins` no request from either was refused for its `Origin`.
 - Both request protocol revision `2025-11-25` in `initialize`.
-- Neither ended a Session during the five minutes observed. claude.ai opened two when it connected. ChatGPT opened five within about a minute, in bursts of two, two, and one. Each Session keeps its Child until the idle timeout, 30 minutes by default, so at that rate ordinary ChatGPT use would reach the default `public.max_sessions` of 16 within minutes.
+- Neither ended a Session during the five minutes observed. claude.ai opened two when it connected. ChatGPT opened five within about a minute, in bursts of two, two, and one. Under the one-Child-per-Session model then in place, each Session kept its Child until the idle timeout, 30 minutes by default, so at that rate ordinary ChatGPT use would have reached the global limit of 16 Sessions within minutes. Each Grant now shares one Child across its Sessions, and holds up to `public.max_sessions_per_grant` of them, 64 by default, before it evicts the least recently active.
 
 Not yet observed: how either client refreshes under strict rotation, including whether it retries or races a refresh, and how it recovers when a restart ends its Sessions.

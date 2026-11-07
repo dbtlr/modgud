@@ -43,7 +43,7 @@ async function* linesOf(stream: ReadableStream<Uint8Array>) {
 }
 
 // A configuration serving the stub Service, with its store in the test's directory.
-const writeServeConfig = async (name: string) => {
+const writeServeConfig = async (name: string, publicSettings = '') => {
   const configPath = join(directory, `${name}.toml`);
   const storePath = join(directory, `${name}.sqlite`);
   await writeFile(
@@ -59,6 +59,7 @@ const writeServeConfig = async (name: string) => {
       [public]
       port = 0
       base_url = "https://modgud.example.com"
+      ${publicSettings}
 
       [admin]
       base_url = "https://modgud.example.ts.net"
@@ -118,6 +119,21 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
   await readUntil(lines, / info stub session \w{8} ended: shutdown\.$/u);
   await readUntil(lines, / info Stopped\.$/u);
   // Loom exits 143 after SIGTERM, once the action has finished its cleanup.
+  expect(await child.exited).toBe(143);
+});
+
+test('serve starts with the retired public.max_sessions set, and warns that it is ignored', async () => {
+  const { configPath } = await writeServeConfig('retired', 'max_sessions = 16');
+  const { child, lines } = await startServe(configPath);
+  try {
+    child.kill('SIGTERM');
+    await readUntil(lines, / info Stopped\.$/u);
+    expect(await new Response(child.stderr).text()).toContain(
+      `In ${configPath}: public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is 64.`,
+    );
+  } finally {
+    child.kill('SIGTERM');
+  }
   expect(await child.exited).toBe(143);
 });
 

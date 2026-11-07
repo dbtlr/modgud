@@ -9,12 +9,15 @@ import { childEnvironment } from './child-environment.ts';
 import { clientLabel } from './client-metadata.ts';
 import { serviceResource } from './config.ts';
 import type { Config, ServiceConfig } from './config.ts';
+import { CHILD_LIMITS, GrantChild } from './grant-child.ts';
+import type { ChildLimits } from './grant-child.ts';
 import { answerUnexpectedError } from './http.ts';
 import type { PeerAddress } from './http.ts';
-import { loggable } from './log.ts';
+import { excerpt, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { createOAuthEndpoints } from './oauth-endpoints.ts';
-import { INITIALIZE_TIMEOUT_MS, Session } from './session.ts';
+import { initializeAnswer } from './protocol.ts';
+import { Session } from './session.ts';
 import type { SessionEndHandler } from './session.ts';
 import type { Store } from './store.ts';
 
@@ -33,9 +36,19 @@ const authorizationOf = (grantId: string) =>
     ? grantId.slice(AUTHORIZATION_GRANT_PREFIX.length)
     : undefined;
 
-// How often Modgud checks that each Session's authorization is still active,
-// so a revoked or expired one ends its Sessions within 10 seconds, even when
-// `modgud revoke` changed the store from another process.
+// A Grant as log lines name it: the static token, or a short prefix of the
+// authorization's id.
+const grantLabel = (grantId: string) => {
+  const authorizationId = authorizationOf(grantId);
+  return authorizationId === undefined
+    ? STATIC_TOKEN_GRANT_ID
+    : `authorization ${authorizationId.slice(0, 8)}`;
+};
+
+// How often Modgud checks that each Grant's authorization is still active,
+// so a revoked or expired one ends its Sessions and stops its Child within
+// 10 seconds, even when `modgud revoke` changed the store from another
+// process.
 export const AUTHORIZATION_SWEEP_MS = 2000;
 
 // How often Modgud deletes expired rows from the store.
@@ -47,10 +60,8 @@ const PROTOCOL_LOG_LIMIT = 64;
 
 const STATIC_TOKEN_CALLER = 'the static bearer token';
 
-// A caller-controlled string as a log line may carry it: its first `limit`
-// code points, with control characters escaped.
-// oxlint-disable-next-line typescript/no-misused-spread -- code points, as loggable counts them
-const logged = (text: string, limit: number) => loggable([...text].slice(0, limit).join(''));
+// A Grant's shared Child, as a map key: one per Service and Grant.
+const childKey = (serviceName: string, grantId: string) => `${serviceName}\n${grantId}`;
 
 const SERVICE_PATH = /^\/([a-z][a-z0-9-]*)\/mcp$/u;
 
@@ -85,14 +96,16 @@ const sessionNotFound = () => jsonRpcError(404, -32_001, 'Session not found');
 
 const shuttingDown = () => jsonRpcError(503, -32_000, 'Modgud is shutting down');
 
+const notStarted = () => jsonRpcError(502, -32_603, 'The Service could not be started');
+
 export type PublicListener = {
   // Bun's server passes itself as the second argument, which gives the peer
   // address that registration limits count by.
   fetch: (request: Request, server?: PeerAddress) => Promise<Response>;
   // Stops the store timers, refuses new Sessions, then ends every Session,
-  // including any still opening, and resolves once every Child has stopped,
-  // including those of Sessions that were already ending. It leaves the
-  // store open for its owner to close.
+  // including any still opening, stops every Child, including any still
+  // starting, and resolves once every Child has exited, including those
+  // already stopping. It leaves the store open for its owner to close.
   close: () => Promise<void>;
   sessionCount: () => number;
 };
@@ -102,8 +115,8 @@ export type PublicListener = {
 // Service, behind the harness's static bearer token or an OAuth access token.
 export const createPublicListener = ({
   authorizationSweepMs = AUTHORIZATION_SWEEP_MS,
+  childLimits = {},
   config,
-  initializeTimeoutMs = INITIALIZE_TIMEOUT_MS,
   log,
   now = Date.now,
   parentEnvironment,
@@ -111,8 +124,9 @@ export const createPublicListener = ({
   store,
 }: {
   authorizationSweepMs?: number;
+  // Shorter bounds on each Grant's Child, for tests.
+  childLimits?: Partial<ChildLimits>;
   config: Config;
-  initializeTimeoutMs?: number;
   log: Log;
   // Milliseconds since the epoch, for the registration limits.
   now?: () => number;
@@ -120,27 +134,55 @@ export const createPublicListener = ({
   storeCleanupMs?: number;
   store: Store;
 }): PublicListener => {
+  const limits: ChildLimits = { ...CHILD_LIMITS, ...childLimits };
+  // Every open Session, by id.
   const sessions = new Map<string, Session>();
-  // Each Session whose Child is starting, settled once it is in `sessions`
-  // or has ended.
-  const opening = new Set<Promise<Session | undefined>>();
-  // For each Session that has ended, the promise that settles once its Child
-  // has stopped, until it does.
-  const stopping = new Set<Promise<void>>();
+  // Each Grant's shared Child, by Service and Grant id, from the Grant's
+  // first initialize until the Grant ends or Modgud shuts down.
+  const children = new Map<string, GrantChild>();
+  // Children that ended for good, until they have exited.
+  const ending = new Set<Promise<void>>();
   let closing = false;
   const allowedOrigins = new Set(config.public.allowed_origins.map((url) => new URL(url).origin));
+  const sessionIdleMs = config.public.session_idle_timeout_minutes * 60_000;
 
-  const untilStopped = async (stopped: Promise<void>) => {
-    stopping.add(stopped);
-    await stopped;
-    stopping.delete(stopped);
+  // The Grant's shared Child, created on first use. It starts no process
+  // until a request needs one.
+  const childFor = (serviceName: string, service: ServiceConfig, grant: Grant) => {
+    const key = childKey(serviceName, grant.id);
+    let child = children.get(key);
+    if (child === undefined) {
+      child = new GrantChild({
+        command: service,
+        environment: () =>
+          childEnvironment({ identity: grant.identity, parent: parentEnvironment, service }),
+        grant: grant.id,
+        grantLabel: grantLabel(grant.id),
+        limits,
+        log,
+        service: serviceName,
+      });
+      children.set(key, child);
+    }
+    return child;
   };
 
-  const ended: SessionEndHandler = (session, reason, stopped) => {
+  const untilExited = async (exited: Promise<void>) => {
+    ending.add(exited);
+    await exited;
+    ending.delete(exited);
+  };
+
+  // Ends a Grant's Sessions and stops its Child for good.
+  const endChild = (child: GrantChild, kind: 'grant ended' | 'shutdown') => {
+    children.delete(childKey(child.service, child.grant));
+    void untilExited(child.end(kind));
+  };
+
+  const ended: SessionEndHandler = (session, reason) => {
     if (sessions.get(session.id) === session) {
       sessions.delete(session.id);
     }
-    void untilStopped(stopped);
     if (reason !== 'not initialized') {
       log.info(`${session.service} session ${session.id.slice(0, 8)} ended: ${reason}.`);
     }
@@ -148,13 +190,14 @@ export const createPublicListener = ({
 
   const oauthEndpoints = createOAuthEndpoints({ config, log, now, store });
 
-  // Ends every Session whose authorization was revoked, expired, or is no
-  // longer for the harness Service.
+  // Ends the Sessions and stops the Child of every Grant whose authorization
+  // was revoked, expired, or is no longer for the harness Service, whether
+  // or not it still has Sessions.
   const sweepAuthorizations = () => {
-    for (const session of sessions.values()) {
-      const authorizationId = authorizationOf(session.grant);
+    for (const child of children.values()) {
+      const authorizationId = authorizationOf(child.grant);
       if (authorizationId !== undefined && !store.isAuthorizationActive(authorizationId)) {
-        void session.end('authorization ended');
+        endChild(child, 'grant ended');
       }
     }
   };
@@ -170,7 +213,7 @@ export const createPublicListener = ({
       }
     }, intervalMs);
   const timers = [
-    every(authorizationSweepMs, sweepAuthorizations, "check the Sessions' authorizations"),
+    every(authorizationSweepMs, sweepAuthorizations, "check the Grants' authorizations"),
     every(storeCleanupMs, () => store.removeExpired(), 'delete expired rows from the store'),
   ];
 
@@ -219,30 +262,6 @@ export const createPublicListener = ({
     });
   };
 
-  // Starts a Session's Child and adds the Session to `sessions`, unless the
-  // listener began closing meanwhile: then it ends the Session at once.
-  const openSession = async (serviceName: string, service: ServiceConfig, grant: Grant) => {
-    const session = await Session.open({
-      command: service,
-      environment: childEnvironment({
-        identity: grant.identity,
-        parent: parentEnvironment,
-        service,
-      }),
-      grant: grant.id,
-      initializeTimeoutMs,
-      log,
-      onEnd: ended,
-      service: serviceName,
-    });
-    if (closing) {
-      await session.end('shutdown');
-      return undefined;
-    }
-    sessions.set(session.id, session);
-    return session;
-  };
-
   const initialize = async (
     request: Request,
     serviceName: string,
@@ -274,39 +293,50 @@ export const createPublicListener = ({
     if (closing) {
       return shuttingDown();
     }
-    if (sessions.size + opening.size >= config.public.max_sessions) {
-      log.warn(`Refused a ${serviceName} session: ${String(config.public.max_sessions)} are open.`);
-      return jsonRpcError(503, -32_000, 'Too many open sessions', { 'Retry-After': '30' });
-    }
     const service = config.services[serviceName];
     if (service === undefined) {
       return notFound();
     }
-    const opened = openSession(serviceName, service, grant);
-    opening.add(opened);
-    let session: Session | undefined;
-    try {
-      session = await opened;
-    } catch (error) {
-      log.warn(`Could not start the ${serviceName} Child: ${loggable(String(error))}`);
-      return jsonRpcError(502, -32_603, 'The Service could not be started');
-    } finally {
-      opening.delete(opened);
-    }
-    if (session === undefined) {
-      return shuttingDown();
-    }
-    const response = await session.handle(request, parsed);
-    if (!session.initialized) {
-      await session.end('not initialized');
-    } else if (!session.ended) {
-      const origin = request.headers.get('origin');
-      log.info(
-        `${serviceName} session ${session.id.slice(0, 8)} opened for ${caller}, Origin ${
-          origin === null ? 'none' : logged(origin, ORIGIN_LOG_LIMIT)
-        }, protocol ${logged(parsed.params.protocolVersion, PROTOCOL_LOG_LIMIT)}.`,
+    const child = childFor(serviceName, service, grant);
+    const session = new Session({
+      child,
+      grant: grant.id,
+      idleMs: sessionIdleMs,
+      log,
+      onEnd: ended,
+      service: serviceName,
+    });
+    if (!child.admit(session, config.public.max_sessions_per_grant)) {
+      log.warn(
+        `Refused a ${serviceName} session for ${caller}: ${String(config.public.max_sessions_per_grant)} are opening.`,
       );
+      return jsonRpcError(503, -32_000, 'Too many sessions are opening', { 'Retry-After': '30' });
     }
+    const readiness = await child.ready();
+    if (readiness.kind !== 'ready' || session.ended) {
+      session.end('not initialized');
+      if (readiness.kind === 'grant ended') {
+        return unauthorized(serviceName, true);
+      }
+      return readiness.kind === 'failed' ? notStarted() : shuttingDown();
+    }
+    const response = await session.open(
+      request,
+      parsed,
+      initializeAnswer(parsed.params.protocolVersion, readiness.result),
+    );
+    // A Session evicted while its initialize was answered never enters the map.
+    if (session.given === undefined || session.ended) {
+      session.end('not initialized');
+      return response;
+    }
+    sessions.set(session.id, session);
+    const origin = request.headers.get('origin');
+    log.info(
+      `${serviceName} session ${session.id.slice(0, 8)} opened for ${caller}, Origin ${
+        origin === null ? 'none' : excerpt(origin, ORIGIN_LOG_LIMIT)
+      }, protocol ${excerpt(parsed.params.protocolVersion, PROTOCOL_LOG_LIMIT)}.`,
+    );
     return response;
   };
 
@@ -322,7 +352,7 @@ export const createPublicListener = ({
     }
     if (authentication.result === 'valid') {
       log.warn(
-        `Refused a ${serviceName} request from ${authentication.caller}: Origin ${logged(
+        `Refused a ${serviceName} request from ${authentication.caller}: Origin ${excerpt(
           origin,
           ORIGIN_LOG_LIMIT,
         )} is not allowed.`,
@@ -375,12 +405,10 @@ export const createPublicListener = ({
         clearInterval(timer);
       }
       closing = true;
-      for (const session of sessions.values()) {
-        void session.end('shutdown');
+      for (const child of children.values()) {
+        endChild(child, 'shutdown');
       }
-      // Each Session just ended is now in `stopping`; each one still opening
-      // is ended as soon as it opens.
-      await Promise.allSettled([...opening, ...stopping]);
+      await Promise.allSettled(ending);
     },
     fetch,
     sessionCount: () => sessions.size,

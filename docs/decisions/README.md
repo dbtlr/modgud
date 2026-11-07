@@ -14,6 +14,6 @@ Architecture decision records (ADRs). Each decision's frontmatter `status` says 
 ## Index
 
 - [ADR-0001 — Callers reach a Service through a Grant, and Modgud is its own OAuth 2.1 authorization server](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md) (proposed)
-- [ADR-0002 — Each MCP session gets its own child process, and the Grant's Identity enters through its environment](0002-one-child-per-session-identity-enters-through-the-environment.md) (proposed)
+- [ADR-0002 — Each Grant shares one on-demand child process across its MCP Sessions, and the Grant's Identity enters through its environment](0002-each-grant-shares-one-child-identity-enters-through-the-environment.md) (proposed)
 - [ADR-0003 — Two listeners split the public surface from everything a person clicks](0003-two-listeners-anything-a-person-clicks-lives-on-the-tailnet.md) (accepted)
 - [ADR-0004 — The Admin listener may bind loopback behind a tailnet forward](0004-the-admin-listener-may-bind-loopback-behind-a-tailnet-forward.md) (accepted)

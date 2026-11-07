@@ -1,0 +1,98 @@
+---
+type: adr
+title: ADR-0002 - Each Grant shares one on-demand child process across its MCP Sessions, and the Grant's Identity enters through its environment
+description: "Modgud runs at most one Child per Grant, started on demand and shared by every Session the Grant opens, and binds each Session to that Grant. A Session outlives its Child. The Child's environment comes only from the Service's configuration and a fixed base allowlist, and only the Grant sets the Identity variable, which is trusted only as far as the OS account that runs Modgud and the Service."
+status: proposed
+created: 2026-11-05
+modified: 2026-11-07
+---
+
+# Each Grant shares one on-demand child process across its MCP Sessions, and the Grant's Identity enters through its environment
+
+## Context
+
+Services are local stdio MCP tools, and a stdio server speaks to exactly one client. Modgud serves many Callers over Streamable HTTP, and some Grants carry an Identity that the Service must know, such as the Mimir user `drew`. Three things need settling: how Modgud maps Sessions to processes, how an Identity reaches a Service, and how far the Service can trust it. Services such as Mimir build against the answer.
+
+The first version of this decision gave each Session its own Child. The end-to-end proof showed that chat clients never end their Sessions and open them in bursts: ChatGPT opened five within about a minute ([observed client behavior](../oauth.md#observed-client-behavior)). With one Child per Session held until the idle timeout, ordinary use would exhaust the Session limit within minutes. MCP revision 2026-07-28 also removes sessions from the protocol, so a Child bound to a Session has no future there.
+
+## Decision
+
+### Children
+
+- **One Child per Grant, shared by its Sessions.** Modgud runs at most one Child for each Grant. Every Session the Grant opens uses it. One Child never serves two Grants, so one process never serves two Identities. The number of Grants bounds the number of Children.
+- **A Child starts on demand.** Modgud starts the Grant's Child when a request must be forwarded and the Grant has no Child running: for a Caller's `initialize`, or for a request on a Session whose Child has stopped. Requests that arrive while the Child starts wait for it. Once Modgud decides to stop a Child, it sends that Child nothing more. A request that arrives meanwhile waits, and the next Child starts only after the old one has exited. A Child that has not exited 2 seconds after Modgud stops it is killed.
+- **Modgud initializes the Child itself.** Modgud sends the Child one `initialize` request with protocol version `2025-11-25`, client information naming Modgud, and no client capabilities. A Child that has not answered within 30 seconds is stopped. A Child is stopped too when it answers with an error, or with a protocol version that is not a 2025-era version Modgud supports. When the Child answers, Modgud sends `notifications/initialized` and keeps the Child's initialize result, which replaces any result an earlier Child gave. Requests waiting for the Child go to it only now, and only those whose Session and Grant are still active.
+- **A Child stops when idle.** The idle clock starts once the Child has answered `initialize`. A Child stops once its Service's idle timeout passes with no message in either direction between Modgud and the Child. A request in flight does not hold it open, because a Child sends no response to a request that was cancelled.
+- **A Session outlives its Child.** When a Child stops, whether idle, exited, or stopped for unreadable output, the Grant's Sessions stay open. Every request still in flight on the Child gets a JSON-RPC error response. The next request starts a new Child. When the new Child's protocol version or capabilities differ from the earlier Child's, Modgud checks each Session before it forwards any waiting request. A Session ends when the version it was given is newer than the new Child's, or when the capabilities it was given differ from those the new Child's result would give.
+- **A failed start backs off.** A Child that cannot be started, fails its `initialize` or its deadline, is stopped for unreadable output, or exits without Modgud stopping it counts as a failure. After a failure, Modgud starts that Grant's Child again no sooner than 1 second later, doubling with each consecutive failure up to 60 seconds. A request that needs the Child before then fails at once. A Child that has run for 60 seconds resets the count. Requests a failed start leaves waiting fail too: an `initialize` gets HTTP 502, and a request on an open Session gets a JSON-RPC error response.
+- **A Grant's end ends its Sessions and its Child.** Revoking or expiring a Grant ends its Sessions and stops its Child at once, not at idle timeout. Modgud checks each Grant that has a Child running or starting, not only each Grant with Sessions. A start still under way for an ended Grant is abandoned: its process is stopped, and every request waiting for it fails without being forwarded. A change to a Grant's Identity stops its Child the same way.
+
+### Sessions
+
+- **A Session is bound to the Grant that opened it.** Every request on a Session (POST, GET, or DELETE) carries a credential that is currently valid and derives from the same Grant that opened the Session. A request with no valid credential gets the 401 that [ADR-0001](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md) requires. A credential for another Service is not valid here and gets that 401 too. A valid credential for this Service that derives from another Grant gets the same HTTP 404 as an unknown session id, so it learns nothing about the Session. Modgud never routes either request to a Child.
+- **Modgud answers `initialize` from the Child's result.** A Caller's `initialize` gets the Child's server information and instructions, and the Child's capabilities without `tasks` and without `resources.subscribe`. Its protocol version is the one the Caller requested when Modgud supports it and it is no newer than the Child's; otherwise it is the Child's. Modgud consumes the Caller's `notifications/initialized` and does not forward it. A later request whose `MCP-Protocol-Version` header names a version Modgud does not support gets HTTP 400.
+- **A Session ends on delete, idle, eviction, a changed Child, its Grant's end, or shutdown.** A Session ends when the Caller deletes it, when `public.session_idle_timeout_minutes` (1440, one day, by default) passes with no activity on it, when it is evicted, when a new Child no longer matches what it was given, when its Grant ends, or when Modgud shuts down. A Child stopping does not otherwise end it. Later requests on an ended Session's id get the MCP "session not found" response, HTTP 404.
+- **A Session's activity is its Caller's.** Activity is an HTTP request on the Session, or a message that answers or reports on one of its requests. A notification that goes to every Session of the Grant is not activity.
+- **A Grant holds a bounded number of Sessions.** Each Grant holds at most `public.max_sessions_per_grant` Sessions, 64 by default, counting those still opening. A Session is opening until Modgud answers its `initialize`. An `initialize` that arrives at the limit first ends the Grant's least recently active open Session as evicted, so a new Session is not refused for the limit. When every Session of the Grant is still opening, the `initialize` gets HTTP 503.
+- **A Grant holds a bounded number of requests.** Each Grant has at most 64 Caller requests waiting for its Child or in flight on it. A request past that gets a JSON-RPC error response and is not forwarded. A forwarded request that was cancelled, or whose Session ended, keeps counting until the Child answers it, the Child stops, or 60 seconds pass, because a Child may keep working on a cancelled request. The limit bounds what Modgud holds for a Grant, not the work a Service does: a Service that ignores cancellation can be working on more.
+- **An ended Session cancels its work.** When a Session ends, its requests still waiting for a Child are dropped and never forwarded. For each of its requests in flight, Modgud sends the Child `notifications/cancelled`. Each of its requests still open gets a JSON-RPC error response, and Modgud closes every stream the Session has open. Either way, Modgud releases the request's ids and tokens for routing.
+- **Shutdown fails waiting work.** On shutdown, Modgud stops every Child, including those starting. A waiting `initialize` gets HTTP 503, and every other waiting request a JSON-RPC error response.
+- **Streams are not resumable.** Modgud keeps no event store, so a stream's events carry no ids and a Caller cannot resume one with `Last-Event-ID`. When a Caller's stream closes before its request is answered, the request keeps running on the Child, and its response is dropped when it arrives. A notification that goes to every Session of the Grant is dropped for a Session with no GET stream open. Responses and progress notifications go on the stream of the request they belong to, whether or not a GET stream is open.
+
+### Messages
+
+- **Modgud renumbers what identifies a request.** Modgud gives each Caller request it forwards a request id that is unique within the Child, and each progress token it carries a token that is unique within the Child. It never reuses an id or token during one Child's life. It maps them back on the way out. It rewrites the `requestId` of a Caller's `notifications/cancelled` the same way. A cancellation that names no request of the same Session that is waiting or in flight is dropped. A cancelled request that is still waiting for a Child is never forwarded. A cancelled request's ids and tokens are released for routing at once; it still counts against the Grant's request limit as described under Sessions. A later message from the Child for a released id or token is dropped. Everything else in a forwarded message passes through unchanged.
+- **Modgud answers some Caller requests itself.** Modgud answers a Caller's `ping` and `logging/setLevel` with an empty result, without forwarding them and without starting a Child. It answers `resources/subscribe`, `resources/unsubscribe`, and every `tasks/` method with JSON-RPC error -32601, method not found. From a request that asks to run as a task, Modgud removes the `task` parameter and forwards it as an ordinary request, as the protocol requires of a receiver that declares no task support.
+- **Messages from the Child reach their owner.** A response goes to the Session and request whose id it carries. A progress notification goes to the request whose token it names. `notifications/tools/list_changed`, `notifications/prompts/list_changed`, and `notifications/resources/list_changed` go to every Session of the Grant, on its GET stream when one is open. Any other message that belongs to no single request, such as a logging notification, goes to Modgud's log, escaped and truncated, and is not forwarded.
+- **Modgud answers a Child's requests itself.** Modgud answers a Child's `ping` with an empty result, and any other request from a Child, such as sampling, elicitation, or `roots/list`, with JSON-RPC error -32601, method not found. The Child sees no client capabilities, so a conforming Service sends none of these. A Child's `notifications/cancelled` names one of these requests, which Modgud has already answered, so it is dropped.
+- **Modgud drops Caller messages that have no Child counterpart.** Caller notifications other than `notifications/cancelled` and Caller responses go nowhere, because the Child sent the Caller no requests.
+- **Modgud's own errors are generic.** Each error Modgud answers in place of a Child carries a fixed message. Exit statuses, stderr, and other detail go only to Modgud's log.
+- **Tool definitions pass through unchanged.** Modgud removes filtered tools ([ADR-0001](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md)) but never rewrites a schema or injects an argument, so the Identity never travels in tool arguments.
+
+### Environment and Identity
+
+- **A Child's environment comes from configuration and a fixed base.** Modgud builds it from the Service's configured environment plus a fixed allowlist of base variables copied from Modgud's environment: `HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `TMPDIR`, `TZ`, and `USER`. A configured value overrides a base value. Nothing else from Modgud's environment reaches the Child.
+- **Only the Grant sets the Identity variable.** The environment variable that the Service's configuration names for Identity is reserved. Modgud removes any value for it from the configured environment and the base, then sets it only from the Grant. When the Grant has no Identity, the variable is absent. A Service without an Identity variable receives none.
+- **This is the contract Services build against.**
+  - Trust comes from the channel: Modgud starts the Child and sets the Identity in its environment.
+  - Modgud forwards no tool-level credential.
+  - Any process under the same OS account can start the Service with any Identity in its environment. An Identity asserted through the environment is therefore trusted only as far as the OS account that runs Modgud and the Service. It adds no protection against local processes under that account, and a Service must not treat it as stronger.
+  - The Service decides what the Identity may do in its own domain; Modgud only asserts it.
+  - A Service serves every Session of one Grant from one process, may be stopped when idle and started again at any time, and must not rely on state that only one client's `initialize` sets up.
+  - Norn receives no Identity.
+- **Each non-blank line a Child writes to stderr goes to Modgud's log,** escaped, truncated, and tagged with its Service and Grant.
+
+### MCP revision 2026-07-28
+
+Modgud serves the 2025-era Streamable HTTP transport. It answers a 2026-07-28 probe as a 2025-era server does, so Callers that negotiate fall back to `initialize`. When Modgud serves 2026-07-28 Callers, it translates their stateless requests onto the same Child of the same Grant: it answers `server/discover` from the Child's initialize result and renumbers ids as above. Modgud speaks the 2025-era protocol to every Child, whichever era its Callers speak.
+
+## Considered options
+
+- One Child per Session, as this decision first said. Rejected: chat clients never end Sessions, so Children pile up until the idle timeout, and the Session limit binds within minutes of ordinary use. Evicting the oldest Session at the limit would keep that model working, but every new conversation would still pay the Child's startup.
+- One shared Child per Service. Rejected: it mixes Callers' Identities in one process, and revoking one Grant could not stop its Child.
+- A Child per call. Rejected: every call would pay the cold start. Measured on the host that runs Modgud, `mimir mcp` takes about 400 ms and `norn mcp` about 45 ms.
+- A Child always running for every Grant. Rejected: it holds a process per Grant even when nobody uses it, while a stopped Child costs only one startup on the next request.
+- Speaking 2026-07-28 to a Child that supports it. Deferred: Mimir speaks only the 2025-era protocol, and one code path serves every current Service.
+
+## Consequences
+
+Each Child's Identity is fixed for its life, and one process never serves two Identities or two Grants.
+A credential stolen from one Grant cannot ride on another Grant's Session, and a revoked Grant leaves no Child running.
+A Grant's Sessions share whatever state the Service keeps in its process, and lose it when the Child stops.
+A Child's requests to the Caller, sampling, elicitation, and roots, are not supported. Neither are resource subscriptions or tasks, whose state would be shared across the Grant's Sessions and lost with the Child. Neither Mimir nor Norn uses any of them, and MCP revision 2026-07-28 drops server-to-client requests.
+Logging notifications from a Child go to Modgud's log, not to a Caller.
+A Caller whose stream drops during a long tool call loses that call's response.
+Modgud does not bound the output buffered for a Caller that stops reading its streams.
+A Session's first request after its Child idled out pays the Child's startup, about 400 ms for Mimir.
+A Service must be willing to take its Identity from its environment. Mimir needs to accept an asserted user from the environment and run without a clone binding.
+A tool call that runs longer than its Service's idle timeout without any message in either direction is cut off when the Child stops.
+Groups and hints are trusted because the fleet's own tools declare them. A third-party tool behind Modgud would need Groups from proxy configuration, which is out of scope for v1.
+HTTP upstream Services, with the Identity in `_meta`, are a future extension and not part of this decision.
+
+## Changelog
+
+- 2026-11-05: Proposed. It becomes accepted as the code it governs lands.
+- 2026-11-05: Addendum. Settled the base environment allowlist, the Session limits, and how messages from a Child reach the Caller request they belong to, as the Phase 1 code landed. Recorded that the decision assumes the 2025-era session handshake. It stays proposed until the Child model for MCP revision 2026-07-28 is settled.
+- 2026-11-06: Addendum. A revocation made by another process, such as `modgud revoke`, reaches the server through the store, so "at once" means within 10 seconds for those Sessions.
+- 2026-11-07: Addendum. The end-to-end proof measured Session churn ([observed client behavior](../oauth.md#observed-client-behavior)). Neither claude.ai nor ChatGPT ended a Session during the five minutes observed, and ChatGPT opened five within about a minute.
+- 2026-11-07: Revised. One Child per Session became one on-demand Child per Grant, shared by the Grant's Sessions, with Sessions that outlive their Child. The global limit of 16 Sessions with HTTP 503 became a per-Grant limit of 64 that evicts the least recently active Session, and a Session now idles out after one day instead of with its Child. Modgud initializes the Child itself, renumbers request ids and progress tokens, answers a Child's requests to the Caller itself, and hides tasks and resource subscriptions. A Grant holds at most 64 requests at once, failed starts back off, and streams are not resumable. MCP revision 2026-07-28 Callers will be translated onto the same Child. Renamed from "Each MCP session gets its own child process".

@@ -1,240 +1,25 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-
-import { sha256Hex } from './bearer.ts';
-import { parseConfig } from './config.ts';
-import type { Log } from './log.ts';
-import { s256Challenge } from './pkce.ts';
-import { createPublicListener } from './public-listener.ts';
 import type { PublicListener } from './public-listener.ts';
-import { openStore } from './store.ts';
-import type { Store } from './store.ts';
+import {
+  connect,
+  connectOAuthClient,
+  createHarness,
+  DAY,
+  firstText,
+  isAlive,
+  post,
+  rejectionOf,
+  processesWith,
+  PUBLIC,
+  TOKEN,
+  waitFor,
+} from './testing/listener-harness.ts';
 
-const TOKEN = 'harness-token';
-const STUB = `${import.meta.dir}/testing/stub-service.ts`;
-const PUBLIC = 'https://modgud.example.com';
-const RESOURCE = `${PUBLIC}/stub/mcp`;
-const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
-const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
-const DAY = 24 * 60 * 60_000;
-
-type Running = {
-  listener: PublicListener;
-  lines: string[];
-  url: URL;
-  stop: () => Promise<void>;
-  store: Store;
-};
-const running: Running[] = [];
-const stores: Store[] = [];
-let directory = '';
-// The store's clock, which decides when an authorization expires.
-let clock = Date.now();
-
-beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), 'modgud-listener-'));
-  clock = Date.now();
-});
-
-afterEach(async () => {
-  await Promise.all(running.splice(0).map(async (instance) => instance.stop()));
-  for (const store of stores.splice(0)) {
-    store.close();
-  }
-  await rm(directory, { force: true, recursive: true });
-});
-
-// Opens a handle on the test's store, as the server or another process does.
-const openTestStore = async () => {
-  const store = await openStore({
-    maxTokenLifetimeDays: 30,
-    now: () => clock,
-    path: join(directory, 'modgud.sqlite'),
-    resource: RESOURCE,
-    warn: () => undefined,
-  });
-  stores.push(store);
-  return store;
-};
-
-// Approves a new client for the harness Service and exchanges its code, as a
-// chat client does through the Approval page and the token endpoint.
-const connectOAuthClient = (store: Store) => {
-  const clientId = store.registerClient({ redirectUris: [REDIRECT] })?.clientId ?? '';
-  const { code: pairingCode } = store.mintPairingCode(10);
-  const approved = store.approve({
-    clientId,
-    codeChallenge: s256Challenge(VERIFIER),
-    pairingCode,
-    redirectUri: REDIRECT,
-    requestedRedirectUri: null,
-  });
-  const result = store.exchangeAuthorizationCode({
-    clientId,
-    code: approved?.code ?? '',
-    codeVerifier: VERIFIER,
-  });
-  if (!result.ok) {
-    throw new Error(`The exchange failed: ${result.error}`);
-  }
-  return { ...result.tokens, clientId };
-};
-
-// Serves the stub Service as `stub`, the harness's Service, and again as
-// `other`, on a free localhost port.
-const start = async ({
-  authorizationSweepMs = undefined as number | undefined,
-  identityEnv = undefined as string | undefined,
-  idleMinutes = 30,
-  initializeTimeoutMs = undefined as number | undefined,
-  marker = '',
-  maxSessions = 16,
-  origins = [] as string[],
-  parentEnvironment = process.env,
-  storeCleanupMs = undefined as number | undefined,
-  stubMode = '',
-  wrapStore = (store: Store) => store,
-} = {}): Promise<Running> => {
-  const stub = `
-    command = ${JSON.stringify(process.execPath)}
-    args = ${JSON.stringify([STUB, ...(marker === '' ? [] : [marker])])}
-    env = { STUB_SETTING = "configured", STUB_MODE = ${JSON.stringify(stubMode)} }
-    idle_timeout_minutes = ${String(idleMinutes)}
-  `;
-  const config = parseConfig(`
-    [harness]
-    bearer_token_sha256 = "${sha256Hex(TOKEN)}"
-    service = "stub"
-
-    [public]
-    allowed_origins = ${JSON.stringify(origins)}
-    max_sessions = ${String(maxSessions)}
-    base_url = "${PUBLIC}"
-
-    [admin]
-    base_url = "https://modgud.example.ts.net"
-    host = "100.64.0.1"
-
-    [services.stub]
-    ${stub}
-    ${identityEnv === undefined ? '' : `identity_env = "${identityEnv}"`}
-
-    [services.other]
-    ${stub}
-  `);
-  const lines: string[] = [];
-  const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
-  const store = await openTestStore();
-  const listener = createPublicListener({
-    config,
-    log,
-    parentEnvironment,
-    store: wrapStore(store),
-    ...(authorizationSweepMs === undefined ? {} : { authorizationSweepMs }),
-    ...(initializeTimeoutMs === undefined ? {} : { initializeTimeoutMs }),
-    ...(storeCleanupMs === undefined ? {} : { storeCleanupMs }),
-  });
-  const server = Bun.serve({
-    fetch: listener.fetch,
-    hostname: '127.0.0.1',
-    idleTimeout: 60,
-    port: 0,
-  });
-  const instance: Running = {
-    lines,
-    listener,
-    stop: async () => {
-      await listener.close();
-      await server.stop(true);
-    },
-    store,
-    url: new URL('/stub/mcp', server.url),
-  };
-  running.push(instance);
-  return instance;
-};
-
-// Command lines of the running processes that contain the marker.
-const processesWith = async (marker: string) => {
-  const ps = Bun.spawn(['ps', '-A', '-ww', '-o', 'args='], { stdout: 'pipe' });
-  const output = await new Response(ps.stdout).text();
-  return output.split('\n').filter((line) => line.includes(marker));
-};
-
-const connect = async (
-  url: URL,
-  {
-    negotiation = 'legacy',
-    token = TOKEN,
-  }: { negotiation?: 'auto' | 'legacy'; token?: string } = {},
-) => {
-  const client = new Client(
-    { name: 'test-caller', version: '1.0.0' },
-    { capabilities: { roots: {} }, versionNegotiation: { mode: negotiation } },
-  );
-  client.setRequestHandler('roots/list', () => ({
-    roots: [{ name: 'root', uri: 'file:///root' }],
-  }));
-  const transport = new StreamableHTTPClientTransport(url, {
-    requestInit: { headers: { Authorization: `Bearer ${token}` } },
-  });
-  await client.connect(transport);
-  return { client, transport };
-};
-
-const firstText = (result: Awaited<ReturnType<Client['callTool']>>) => {
-  const [block] = result.content as { text: string }[];
-  return block?.text;
-};
-
-const initializeBody = JSON.stringify({
-  id: 1,
-  jsonrpc: '2.0',
-  method: 'initialize',
-  params: {
-    capabilities: {},
-    clientInfo: { name: 'raw', version: '1' },
-    protocolVersion: '2025-11-25',
-  },
-});
-
-const post = (url: URL, headers: Record<string, string>, body = initializeBody) =>
-  fetch(url, {
-    body,
-    headers: {
-      Accept: 'application/json, text/event-stream',
-      'Content-Type': 'application/json',
-      ...headers,
-    },
-    method: 'POST',
-  });
-
-// Whether a process with this id exists, counting one that has exited but has
-// not yet been reaped.
-const isAlive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const waitFor = async (condition: () => boolean | Promise<boolean>, timeoutMs = 3000) => {
-  const deadline = Date.now() + timeoutMs;
-  // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
-  while (!(await condition())) {
-    if (Date.now() > deadline) {
-      throw new Error('Timed out waiting for the condition.');
-    }
-    // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
-    await Bun.sleep(10);
-  }
-};
+const harness = createHarness();
+const { openTestStore, start } = harness;
+beforeEach(harness.setup);
+afterEach(harness.teardown);
 
 describe('a Caller with the harness token', () => {
   test('lists and calls the Service tools, with definitions passed through unchanged', async () => {
@@ -244,16 +29,22 @@ describe('a Caller with the harness token', () => {
     const { tools } = await client.listTools();
     const echo = tools.find((tool) => tool.name === 'echo');
     expect(tools.map((tool) => tool.name).toSorted()).toEqual([
+      'answer-despite-cancel',
+      'child-request',
       'close-stdin',
+      'crash',
       'echo',
       'environment',
       'exit',
-      'notify-after-cancel',
+      'list-changed',
+      'log',
       'oversized',
       'pid',
       'progress',
-      'roots',
+      'progress-echo',
+      'progress-ticks',
       'slow',
+      'stderr',
       'unmatched-response',
       'wait-for-cancel',
     ]);
@@ -281,15 +72,6 @@ describe('a Caller with the harness token', () => {
     expect(progress).toEqual([1]);
   });
 
-  test("passes the Child's request to the Caller and the Caller's answer back", async () => {
-    const { url } = await start();
-    const { client } = await connect(url);
-
-    const result = await client.callTool({ arguments: {}, name: 'roots' });
-
-    expect(JSON.parse(firstText(result) ?? '')).toEqual([{ name: 'root', uri: 'file:///root' }]);
-  });
-
   test('falls back to initialize when the Caller probes for a later protocol revision', async () => {
     const { url } = await start();
     const { client } = await connect(url, { negotiation: 'auto' });
@@ -297,24 +79,6 @@ describe('a Caller with the harness token', () => {
     const result = await client.callTool({ arguments: { text: 'fallback' }, name: 'echo' });
 
     expect(firstText(result)).toBe('fallback');
-  });
-
-  test('gives each Session its own Child', async () => {
-    const { listener, url } = await start();
-    const first = await connect(url);
-    const second = await connect(url);
-
-    const pids = await Promise.all(
-      [first, second].map(async ({ client }) => {
-        const result = await client.callTool({ arguments: {}, name: 'pid' });
-        return firstText(result);
-      }),
-    );
-
-    expect(listener.sessionCount()).toBe(2);
-    expect(first.transport.sessionId).not.toBe(second.transport.sessionId);
-    expect(pids[0]).toMatch(/^\d+$/u);
-    expect(pids[0]).not.toBe(pids[1]);
   });
 
   test("builds the Child's environment from the base variables and the Service's config only", async () => {
@@ -359,13 +123,33 @@ describe('a Caller with the harness token', () => {
     expect(JSON.parse(firstText(result) ?? '{}')).not.toHaveProperty('USER');
   });
 
-  test("logs the Child's stderr, tagged with its Service and Session", async () => {
-    const { lines, url } = await start();
-    const { transport } = await connect(url);
+  test("logs the Child's stderr, tagged with its Service and Grant", async () => {
+    const { lines, store, url } = await start();
+    const { authorizationId, accessToken } = connectOAuthClient(store);
+    await connect(url);
+    await connect(url, { token: accessToken });
 
-    await waitFor(() => lines.some((line) => line.includes('stderr: stub-service started')));
+    await waitFor(
+      () => lines.filter((line) => line.endsWith('stderr: stub-service started')).length === 2,
+    );
+    expect(lines).toContainEqual('stub child for static-token stderr: stub-service started');
     expect(lines).toContainEqual(
-      `stub session ${transport.sessionId?.slice(0, 8) ?? ''} stderr: stub-service started`,
+      `stub child for authorization ${authorizationId.slice(0, 8)} stderr: stub-service started`,
+    );
+  });
+
+  test("logs the Child's stderr escaped and cut to 2000 code points", async () => {
+    const { lines, url } = await start();
+    const { client } = await connect(url);
+
+    await client.callTool({
+      arguments: { text: `bell\u0007${'b'.repeat(3000)}` },
+      name: 'stderr',
+    });
+
+    await waitFor(() => lines.some((line) => line.includes('stderr: bell')));
+    expect(lines).toContainEqual(
+      `stub child for static-token stderr: bell\\u0007${'b'.repeat(1995)}`,
     );
   });
 });
@@ -431,30 +215,20 @@ describe('ending a Session', () => {
     await client.close();
   });
 
-  test('a Child that exits ends its Session, and later requests on it get 404', async () => {
-    const { lines, listener, url } = await start();
-    const { client, transport } = await connect(url);
+  test('an idle Session is ended after its timeout, and later requests on it get 404', async () => {
+    const { lines, listener, url } = await start({ sessionIdleMinutes: 0.005 });
+    const { transport } = await connect(url);
 
-    await client.callTool({ arguments: {}, name: 'exit' });
     await waitFor(() => listener.sessionCount() === 0);
-
+    expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
     const response = await post(url, {
       Authorization: `Bearer ${TOKEN}`,
       'Mcp-Session-Id': transport.sessionId ?? '',
     });
     expect(response.status).toBe(404);
-    expect(lines.some((line) => line.endsWith('ended: child exited.'))).toBe(true);
   });
 
-  test('an idle Session is ended after its timeout', async () => {
-    const { lines, listener, url } = await start({ idleMinutes: 0.005 });
-    await connect(url);
-
-    await waitFor(() => listener.sessionCount() === 0);
-    expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
-  });
-
-  test('a cancelled call the Child never answers does not keep its Session past the idle timeout', async () => {
+  test('a cancelled call the Child never answers does not keep the Child past its idle timeout', async () => {
     const { lines, listener, url } = await start({ idleMinutes: 0.005 });
     const { client } = await connect(url);
 
@@ -466,109 +240,56 @@ describe('ending a Session', () => {
     }
 
     expect(cancelled).toBe(true);
-    await waitFor(() => listener.sessionCount() === 0);
-    expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
+    await waitFor(() =>
+      lines.some((line) => line.endsWith('child for static-token stopped: idle.')),
+    );
+    expect(listener.sessionCount()).toBe(1);
   });
 
-  test('an uncancelled call the Child never answers does not keep its Session past the idle timeout', async () => {
+  test('an uncancelled call the Child never answers does not keep the Child past its idle timeout, and gets an error', async () => {
     const { lines, listener, url } = await start({ idleMinutes: 0.005 });
     const { client } = await connect(url);
-    const abandon = new AbortController();
-    const call = (async () => {
-      try {
-        await client.callTool({ arguments: {}, name: 'slow' }, { signal: abandon.signal });
-      } catch {
-        // Expected: the test abandons the call once its Session has ended.
-      }
-    })();
 
-    await waitFor(() => listener.sessionCount() === 0);
-    abandon.abort();
-    await call;
-    expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
+    const call = client.callTool({ arguments: {}, name: 'slow' });
+
+    expect(await rejectionOf(call)).toContain('The Service stopped before it answered');
+    expect(lines.some((line) => line.endsWith('child for static-token stopped: idle.'))).toBe(true);
+    expect(listener.sessionCount()).toBe(1);
   });
 
-  test("after the Caller cancels one call, the Child's notification without a progress token reaches the other call in flight", async () => {
-    const { lines, url } = await start();
-    const { transport } = await connect(url);
-    const headers = {
-      Authorization: `Bearer ${TOKEN}`,
-      'Mcp-Protocol-Version': transport.protocolVersion ?? '',
-      'Mcp-Session-Id': transport.sessionId ?? '',
-    };
-    const callTool = (id: string, name: string) =>
-      post(
-        url,
-        headers,
-        JSON.stringify({
-          id,
-          jsonrpc: '2.0',
-          method: 'tools/call',
-          params: { arguments: {}, name },
-        }),
-      );
-
-    // Bun sends an event stream's headers with its first event, so neither
-    // call's response arrives until the Child writes to it. The cancelled
-    // call's never does, so the test does not wait for it.
-    void (async () => {
-      try {
-        await callTool('cancelled', 'wait-for-cancel');
-      } catch {
-        // Expected when the listener stops under the open stream.
-      }
-    })();
-    await waitFor(() => lines.some((line) => line.endsWith('stderr: waiting for cancel')));
-    const other = callTool('other', 'notify-after-cancel');
-    await waitFor(() => lines.some((line) => line.endsWith('stderr: waiting to notify')));
-    const cancel = await post(
-      url,
-      headers,
-      JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'notifications/cancelled',
-        params: { requestId: 'cancelled' },
-      }),
-    );
-
-    expect(cancel.status).toBe(202);
-    const stream = await (await other).text();
-    expect(stream).toContain('after cancel');
-    expect(stream).toContain('notified');
-  });
-
-  test('a Child that never answers initialize is ended within the bound', async () => {
+  test('a Child that never answers initialize is stopped within the bound, and the initialize gets 502', async () => {
     const marker = `marker-${crypto.randomUUID()}`;
     const { lines, listener, url } = await start({
-      initializeTimeoutMs: 200,
+      childLimits: { initializeTimeoutMs: 200 },
       marker,
-      stubMode: 'mute',
+      stubEnv: { STUB_MODE: 'mute' },
     });
 
     const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
-    await response.body?.cancel();
 
-    await waitFor(() => listener.sessionCount() === 0);
-    expect(lines.some((line) => line.endsWith('ended: initialize timed out.'))).toBe(true);
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: { code: -32_603, message: 'The Service could not be started' },
+      id: null,
+      jsonrpc: '2.0',
+    });
+    expect(listener.sessionCount()).toBe(0);
+    expect(lines).toContainEqual('stub child for static-token stopped: initialize timed out.');
     await waitFor(async () => (await processesWith(marker)).length === 0);
   });
 
-  test('a Child message over the size limit ends its Session instead of wedging it', async () => {
-    const { lines, listener, url } = await start();
+  test('a Child message over the size limit stops the Child and fails the call, and the Session survives', async () => {
+    const { lines, listener, url } = await start({ childLimits: { backoffBaseMs: 50 } });
     const { client } = await connect(url);
 
-    // The SDK client waits out its own timeout once the Session is gone.
-    const call = (async () => {
-      try {
-        await client.callTool({ arguments: {}, name: 'oversized' }, { timeout: 1000 });
-      } catch {
-        // Expected: the Session ended under the call.
-      }
-    })();
+    const call = client.callTool({ arguments: {}, name: 'oversized' });
 
-    await waitFor(() => listener.sessionCount() === 0);
-    await call;
-    expect(lines.some((line) => line.endsWith('ended: child protocol error.'))).toBe(true);
+    expect(await rejectionOf(call)).toContain('The Service stopped before it answered');
+    expect(lines).toContainEqual('stub child for static-token stopped: unreadable output.');
+    expect(listener.sessionCount()).toBe(1);
+    await Bun.sleep(100);
+    const result = await client.callTool({ arguments: { text: 'still here' }, name: 'echo' });
+    expect(firstText(result)).toBe('still here');
   });
 
   test('an initialize after close gets 503 and starts no Child', async () => {
@@ -632,11 +353,14 @@ describe('ending a Session', () => {
     }
   });
 
-  test('close does not resolve until the Child of a Session already ending has stopped', async () => {
-    const { listener, url } = await start({ idleMinutes: 0.005, stubMode: 'ignore-sigterm' });
+  test('close does not resolve until a Child already stopping has exited', async () => {
+    const { lines, listener, url } = await start({
+      idleMinutes: 0.005,
+      stubEnv: { STUB_MODE: 'ignore-sigterm' },
+    });
     const { client } = await connect(url);
     const pid = Number(firstText(await client.callTool({ arguments: {}, name: 'pid' })));
-    await waitFor(() => listener.sessionCount() === 0);
+    await waitFor(() => lines.some((line) => line.endsWith('stopped: idle.')));
     expect(isAlive(pid)).toBe(true);
 
     await listener.close();
@@ -768,15 +492,6 @@ describe('refusals', () => {
 
     expect(response.status).toBe(400);
     expect(listener.sessionCount()).toBe(0);
-  });
-
-  test('a new Session past the maximum gets 503', async () => {
-    const { url } = await start({ maxSessions: 1 });
-    await connect(url);
-
-    const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
-
-    expect(response.status).toBe(503);
   });
 });
 
@@ -971,7 +686,7 @@ describe('ending the Sessions of an authorization', () => {
     await Bun.sleep(100);
     expect(listener.sessionCount()).toBe(1);
 
-    clock += 30 * DAY;
+    harness.advanceClock(30 * DAY);
 
     await waitFor(() => listener.sessionCount() === 0);
   });
