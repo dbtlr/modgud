@@ -13,7 +13,7 @@
     "build": "bun run --cwd packages/modgud loom build --out ../../dist/modgud"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
+    "@types/bun": "^1.4.4",
     "vite-plus": "^1.0.0"
   }
 }
