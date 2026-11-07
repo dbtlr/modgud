@@ -80,15 +80,16 @@ const isTailnetAddress = (host: string) =>
   (isIPv4(host) && TAILNET_IPV4.check(host, 'ipv4')) ||
   (isIPv6(host) && TAILNET_IPV6.check(host, 'ipv6'));
 
-// The Admin listener binds the tailnet only and sits behind a TLS-terminating
-// proxy there (ADR-0003).
+// The Admin listener binds a tailnet address, or loopback behind a tailnet
+// forward such as `tailscale serve`, and sits behind a TLS-terminating proxy
+// on the tailnet (ADR-0003, ADR-0004).
 const adminListener = z.strictObject({
   base_url: baseUrl,
   host: z
     .string()
     .refine(
-      isTailnetAddress,
-      'The Admin listener binds the tailnet only: use an address in 100.64.0.0/10 or fd7a:115c:a1e0::/48.',
+      (host) => isTailnetAddress(host) || LOOPBACK_HOSTS.has(host),
+      'The Admin listener binds the tailnet or loopback only: use an address in 100.64.0.0/10 or fd7a:115c:a1e0::/48, or 127.0.0.1, ::1, or localhost behind a tailnet forward.',
     ),
   port: z.int().min(0).max(65_535).default(8471),
 });

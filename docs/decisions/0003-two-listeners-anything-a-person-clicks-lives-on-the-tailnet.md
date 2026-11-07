@@ -4,7 +4,7 @@ title: ADR-0003 - Two listeners split the public surface from everything a perso
 description: "The Public listener binds localhost behind cloudflared and serves only the MCP endpoints and the OAuth endpoints chat-client servers call. The Admin listener binds the tailnet only and serves the Approval page, the admin API, and the admin panel."
 status: accepted
 created: 2026-11-05
-modified: 2026-11-06
+modified: 2026-11-07
 ---
 
 # Two listeners split the public surface from everything a person clicks
@@ -39,3 +39,4 @@ The Admin listener's TLS depends on the proxy in front of it, and the hop from t
 
 - 2026-11-05: Proposed. It becomes accepted as the code it governs lands.
 - 2026-11-06: Addendum and accepted. The listener split landed with the Approval page, the Admin listener's first route; the admin API and panel arrive under this decision later. The Admin listener binds a tailnet address behind a TLS-terminating proxy on the tailnet, and both listeners take their public addresses from configuration.
+- 2026-11-07: The rule that the Admin listener binds a tailnet address only is replaced by [ADR-0004](0004-the-admin-listener-may-bind-loopback-behind-a-tailnet-forward.md), which also allows loopback behind a tailnet forward. The rest of this decision stands.

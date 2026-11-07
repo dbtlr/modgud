@@ -198,16 +198,22 @@ describe('parseConfig', () => {
     }
   });
 
-  test('refuses an Admin listener host off the tailnet, naming the setting', () => {
+  test('accepts a loopback Admin listener host, for a tailnet forward in front of it', () => {
+    for (const host of ['127.0.0.1', '::1', 'localhost']) {
+      expect(parseConfig(configWith({ 'admin.host': `"${host}"` })).admin.host).toBe(host);
+    }
+  });
+
+  test('refuses an Admin listener host neither on the tailnet nor loopback, naming the setting', () => {
     for (const host of [
       '100.63.255.255',
       '100.128.0.1',
-      '127.0.0.1',
+      '127.0.0.2',
       '0.0.0.0',
       '::',
       '::ffff:100.64.0.1',
+      '::ffff:127.0.0.1',
       'fd7a:115c:a1e1::1',
-      'localhost',
       'modgud.example.ts.net',
     ]) {
       expect(() => parseConfig(configWith({ 'admin.host': `"${host}"` }))).toThrow(/admin\.host/u);
