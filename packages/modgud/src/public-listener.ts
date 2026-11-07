@@ -47,9 +47,10 @@ const PROTOCOL_LOG_LIMIT = 64;
 
 const STATIC_TOKEN_CALLER = 'the static bearer token';
 
-// A caller-controlled string as a log line may carry it: control characters
-// escaped, cut to `limit` characters.
-const logged = (text: string, limit: number) => loggable(text).slice(0, limit);
+// A caller-controlled string as a log line may carry it: its first `limit`
+// code points, with control characters escaped.
+// oxlint-disable-next-line typescript/no-misused-spread -- code points, as loggable counts them
+const logged = (text: string, limit: number) => loggable([...text].slice(0, limit).join(''));
 
 const SERVICE_PATH = /^\/([a-z][a-z0-9-]*)\/mcp$/u;
 
@@ -300,17 +301,33 @@ export const createPublicListener = ({
       await session.end('not initialized');
     } else if (!session.ended) {
       const origin = request.headers.get('origin');
-      const protocol =
-        typeof parsed.params.protocolVersion === 'string'
-          ? parsed.params.protocolVersion
-          : undefined;
       log.info(
         `${serviceName} session ${session.id.slice(0, 8)} opened for ${caller}, Origin ${
           origin === null ? 'none' : logged(origin, ORIGIN_LOG_LIMIT)
-        }, protocol ${protocol === undefined ? 'none' : logged(protocol, PROTOCOL_LOG_LIMIT)}.`,
+        }, protocol ${logged(parsed.params.protocolVersion, PROTOCOL_LOG_LIMIT)}.`,
       );
     }
     return response;
+  };
+
+  // Warns of a request refused for its Origin, only when its credential is
+  // valid, so an anonymous flood cannot fill the log. The 403 stands even when
+  // the store cannot be read.
+  const warnOfRefusedOrigin = (request: Request, serviceName: string, origin: string) => {
+    let authentication: ReturnType<typeof authenticate>;
+    try {
+      authentication = authenticate(request, serviceName);
+    } catch {
+      return;
+    }
+    if (authentication.result === 'valid') {
+      log.warn(
+        `Refused a ${serviceName} request from ${authentication.caller}: Origin ${logged(
+          origin,
+          ORIGIN_LOG_LIMIT,
+        )} is not allowed.`,
+      );
+    }
   };
 
   const serviceRequest = async (request: Request): Promise<Response> => {
@@ -318,22 +335,13 @@ export const createPublicListener = ({
     if (serviceName === undefined || !Object.hasOwn(config.services, serviceName)) {
       return notFound();
     }
-    const authentication = authenticate(request, serviceName);
     // A browser page on another site must not drive a Service (DNS rebinding).
     const origin = request.headers.get('origin');
     if (origin !== null && !allowedOrigins.has(origin)) {
-      // Only an authenticated caller is logged, so an anonymous flood cannot
-      // fill the log.
-      if (authentication.result === 'valid') {
-        log.warn(
-          `Refused a ${serviceName} request from ${authentication.caller}: Origin ${logged(
-            origin,
-            ORIGIN_LOG_LIMIT,
-          )} is not allowed.`,
-        );
-      }
+      warnOfRefusedOrigin(request, serviceName, origin);
       return jsonRpcError(403, -32_000, 'Forbidden: Origin not allowed');
     }
+    const authentication = authenticate(request, serviceName);
     if (authentication.result !== 'valid') {
       return unauthorized(serviceName, authentication.result === 'invalid');
     }

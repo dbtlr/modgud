@@ -745,6 +745,18 @@ describe('refusals', () => {
     ]);
   });
 
+  test('a refused Origin is logged escaped and cut to 200 code points', async () => {
+    const { lines, url } = await start({ origins: ['https://claude.ai'] });
+    const origin = `https://evil.test\u0085${'a'.repeat(300)}`;
+
+    const response = await post(url, { Authorization: `Bearer ${TOKEN}`, Origin: origin });
+
+    expect(response.status).toBe(403);
+    expect(lines).toEqual([
+      `Refused a stub request from the static bearer token: Origin https://evil.test\\u0085${'a'.repeat(182)} is not allowed.`,
+    ]);
+  });
+
   test('a request other than initialize without a session id gets 400 and starts no Child', async () => {
     const { listener, url } = await start();
 
