@@ -129,12 +129,12 @@ const startServe = async (configPath: string) => {
   const lines = logRecordsOf(logPath(scratch), () => child.exitCode !== null)[
     Symbol.asyncIterator
   ]();
-  return { admin, base, child, lines };
+  return { admin, base, child, lines, printed };
 };
 
 test('serve answers MCP on the configured Service path and ends its Sessions on SIGTERM', async () => {
   const { configPath } = await writeServeConfig('modgud');
-  const { base, child, lines } = await startServe(configPath);
+  const { base, child, lines, printed } = await startServe(configPath);
 
   const client = new Client({ name: 'serve-test', version: '1.0.0' });
   await client.connect(
@@ -152,6 +152,7 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
   child.kill('SIGTERM');
   await readUntil(lines, /^info stub session \w{8} ended: shutdown\.$/u);
   await readUntil(lines, /^info Stopped\.$/u);
+  await readUntil(printed, /^Stopped\.$/u);
   // Loom exits 143 after SIGTERM, once the action has finished its cleanup.
   expect(await child.exited).toBe(143);
 });
@@ -268,6 +269,60 @@ test('serve answers the Approval page on the Admin listener, only for its config
     child.kill('SIGTERM');
   }
   await readUntil(lines, /^info Stopped\.$/u);
+  expect(await child.exited).toBe(143);
+});
+
+test('serve logs the Approval page’s decisions and the errors either listener answers with HTTP 500', async () => {
+  const { configPath } = await writeServeConfig('logged');
+  const { admin, base, child, lines } = await startServe(configPath);
+  try {
+    const registration = await fetch(new URL('oauth/register', base), {
+      body: JSON.stringify({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+    });
+    const { client_id: clientId } = (await registration.json()) as { client_id: string };
+    const query = new URLSearchParams({
+      client_id: clientId,
+      code_challenge: s256Challenge('dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'),
+      code_challenge_method: 'S256',
+      redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+      response_type: 'code',
+      state: 'state-123',
+    });
+    const page = await fetch(new URL(`authorize?${query.toString()}`, admin), {
+      headers: {
+        Host: 'modgud.example.ts.net',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'cross-site',
+      },
+    });
+    const request = /name="request" value="([^"]+)"/u.exec(await page.text())?.[1] ?? '';
+    const denied = await fetch(new URL('authorize', admin), {
+      body: new URLSearchParams({ action: 'deny', request }),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: page.headers.get('set-cookie')?.split(';')[0] ?? '',
+        Host: 'modgud.example.ts.net',
+        Origin: 'https://modgud.example.ts.net',
+      },
+      method: 'POST',
+      redirect: 'manual',
+    });
+    expect(denied.status).toBe(303);
+    await readUntil(lines, /^info Denied client /u);
+
+    const publicThrown = await fetch(new URL('modgud-test-throw', base));
+    const adminThrown = await fetch(new URL('modgud-test-throw', admin), {
+      headers: { Host: 'modgud.example.ts.net' },
+    });
+    expect([publicThrown.status, adminThrown.status]).toEqual([500, 500]);
+    await readUntil(lines, /^warn Answered a request with HTTP 500: thrown past the listener$/u);
+    await readUntil(lines, /^warn Answered a request with HTTP 500: thrown past the listener$/u);
+  } finally {
+    child.kill('SIGTERM');
+  }
   expect(await child.exited).toBe(143);
 });
 
