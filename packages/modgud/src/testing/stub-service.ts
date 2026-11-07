@@ -132,6 +132,26 @@ server.registerTool(
 );
 
 server.registerTool(
+  'progress-ticks',
+  { description: 'Report progress every 100 ms, 8 times, then finish.' },
+  async (context) => {
+    const progressToken = context.mcpReq._meta?.progressToken;
+    for (let tick = 1; tick <= 8; tick += 1) {
+      // oxlint-disable-next-line no-await-in-loop
+      await Bun.sleep(100);
+      if (progressToken !== undefined) {
+        // oxlint-disable-next-line no-await-in-loop
+        await context.mcpReq.notify({
+          method: 'notifications/progress',
+          params: { progress: tick, progressToken, total: 8 },
+        });
+      }
+    }
+    return text('done');
+  },
+);
+
+server.registerTool(
   'progress-echo',
   {
     description: 'Report progress with the text it is given, wait 100 ms, then return the text.',

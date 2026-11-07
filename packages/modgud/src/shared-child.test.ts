@@ -285,7 +285,19 @@ describe('a Child that crashes', () => {
     expect(await callPid(client)).toMatch(/^\d+$/u);
   });
 
-  test('a Child that cannot start fails its initialize with 502, and backs off', async () => {
+  test('a Child whose command cannot be started fails its initialize with 502, and backs off', async () => {
+    const { lines, url } = await start({ command: '/nonexistent/modgud-test-service' });
+
+    const failed = await post(url, { Authorization: 'Bearer harness-token' });
+    const refused = await post(url, { Authorization: 'Bearer harness-token' });
+
+    expect(failed.status).toBe(502);
+    expect(refused.status).toBe(502);
+    expect(childStarts(lines)).toHaveLength(0);
+    expect(lines.some((line) => line.includes(' could not start: '))).toBe(true);
+  });
+
+  test('a Child that exits before answering initialize fails it with 502, and backs off', async () => {
     const { lines, url } = await start({ stubEnv: { STUB_MODE: 'exit' } });
 
     const failed = await post(url, { Authorization: 'Bearer harness-token' });

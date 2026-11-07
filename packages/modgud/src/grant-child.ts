@@ -214,6 +214,10 @@ export class GrantChild {
   // answers it with an error when the Grant holds too many requests or the
   // Child cannot start.
   forward(session: GrantSession, message: JSONRPCRequest) {
+    // An ended Session's work is never forwarded (ADR-0002).
+    if (session.ended) {
+      return;
+    }
     if (this.#ended !== undefined) {
       session.deliver(errorResponse(message.id, ERRORS.unavailable), { activity: true });
       return;

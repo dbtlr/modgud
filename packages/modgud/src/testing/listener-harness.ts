@@ -38,6 +38,8 @@ export type StartOptions = {
   identityEnv?: string;
   // The Service's idle timeout, which stops its Children.
   idleMinutes?: number;
+  // The Service's command, in place of the stub, such as one that does not exist.
+  command?: string;
   // An argument the stub gets, so a test can find its processes.
   marker?: string;
   maxSessionsPerGrant?: number;
@@ -94,6 +96,7 @@ export const createHarness = () => {
   const start = async ({
     authorizationSweepMs,
     childLimits,
+    command = process.execPath,
     identityEnv,
     idleMinutes = 30,
     marker = '',
@@ -106,7 +109,7 @@ export const createHarness = () => {
     wrapStore = (store: Store) => store,
   }: StartOptions = {}): Promise<Running> => {
     const stub = `
-      command = ${JSON.stringify(process.execPath)}
+      command = ${JSON.stringify(command)}
       args = ${JSON.stringify([STUB, ...(marker === '' ? [] : [marker])])}
       env = ${tomlTable({ STUB_MODE: '', STUB_SETTING: 'configured', ...stubEnv })}
       idle_timeout_minutes = ${String(idleMinutes)}

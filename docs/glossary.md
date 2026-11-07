@@ -49,7 +49,7 @@ One approved chat-client connection: a client, the redirect URI it was approved 
 _Avoid_: Consent, login
 
 **Session**:
-One MCP session between a Caller and a Service under one Grant, from `initialize` until the Caller deletes it, it idles out, it is evicted, or its Grant is revoked or expires. It outlives the Child that serves it.
+One MCP session between a Caller and a Service under one Grant, from `initialize` until the Caller deletes it, it idles out, it is evicted, a new Child no longer matches what it was given, its Grant is revoked or expires, or Modgud shuts down. It outlives the Child that serves it.
 _Avoid_: Connection, conversation
 
 **Child**:

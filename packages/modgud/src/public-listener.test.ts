@@ -42,6 +42,7 @@ describe('a Caller with the harness token', () => {
       'pid',
       'progress',
       'progress-echo',
+      'progress-ticks',
       'slow',
       'stderr',
       'unmatched-response',

@@ -137,8 +137,8 @@ export const createPublicListener = ({
   const limits: ChildLimits = { ...CHILD_LIMITS, ...childLimits };
   // Every open Session, by id.
   const sessions = new Map<string, Session>();
-  // Each Grant's shared Child, by Service and Grant id, while the Grant has
-  // Sessions or a Child.
+  // Each Grant's shared Child, by Service and Grant id, from the Grant's
+  // first Session until the Grant ends or Modgud shuts down.
   const children = new Map<string, GrantChild>();
   // Children that ended for good, until they have exited.
   const ending = new Set<Promise<void>>();
@@ -325,7 +325,8 @@ export const createPublicListener = ({
       parsed,
       initializeAnswer(parsed.params.protocolVersion, readiness.result),
     );
-    if (session.given === undefined) {
+    // A Session evicted while its initialize was answered never enters the map.
+    if (session.given === undefined || session.ended) {
       session.end('not initialized');
       return response;
     }
