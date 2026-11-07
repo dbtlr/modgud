@@ -4,7 +4,7 @@ title: ADR-0002 - Each MCP session gets its own child process, and the Grant's I
 description: "Modgud starts one Child per Session on initialize and binds the Session to the Grant that opened it. The Child's environment comes only from the Service's configuration and a fixed base allowlist, and only the Grant sets the Identity variable, which is trusted only as far as the OS account that runs Modgud and the Service."
 status: proposed
 created: 2026-11-05
-modified: 2026-11-05
+modified: 2026-11-07
 ---
 
 # Each MCP session gets its own child process, and the Grant's Identity enters through its environment
@@ -54,3 +54,4 @@ HTTP upstream Services, with the Identity in `_meta`, are a future extension and
 - 2026-11-05: Proposed. It becomes accepted as the code it governs lands.
 - 2026-11-05: Addendum. Settled the base environment allowlist, the Session limits, and how messages from a Child reach the Caller request they belong to, as the Phase 1 code landed. Recorded that the decision assumes the 2025-era session handshake. It stays proposed until the Child model for MCP revision 2026-07-28 is settled.
 - 2026-11-06: Addendum. A revocation made by another process, such as `modgud revoke`, reaches the server through the store, so "at once" means within 10 seconds for those Sessions.
+- 2026-11-07: Addendum. The end-to-end proof measured Session churn ([observed client behavior](../oauth.md#observed-client-behavior)). Neither claude.ai nor ChatGPT ends its Sessions, and ChatGPT opened five in its first minute. With one Child per Session held until the idle timeout, the Session limit binds before Child startup time does. How a Child maps to a Session is settled before this decision is accepted, together with the Child model for MCP revision 2026-07-28.

@@ -205,7 +205,15 @@ Both commands read the same configuration file as `modgud serve` and act on its 
 - A page the approver opens can open a window and navigate it to `/authorize` repeatedly, which passes as top-level navigation. That can fill the pending requests and spend the metadata fetch budget while the page stays open.
 - A client that presents a refresh token it or another of its processes already used, as after a lost refresh response or two refreshes at once, revokes its own authorization, and the person pairs again.
 
-## Open items for the end-to-end proof
+## Observed client behavior
 
-- Whether claude.ai and ChatGPT send `resource`. Modgud defaults it when absent.
-- How often a client retries or races a refresh, which revokes its authorization under strict rotation. One case to watch: two Claude Code sessions sharing one stored credential across an access-token expiry.
+Observed on 2026-11-07, with claude.ai and ChatGPT developer mode each connected through the tunnel, paired on the Approval page, and calling a Service tool:
+
+- Both identify themselves with a Client ID Metadata Document (`https://claude.ai/…` and `https://chatgpt.com/…`), not dynamic registration.
+- Both open the authorization endpoint on `admin.base_url` in the person's browser, so the split between the issuer and the Approval page works for both.
+- Both send `resource` when they exchange the authorization code.
+- Neither sends an `Origin` header on Service requests, so the default empty `public.allowed_origins` serves them.
+- Both request protocol revision `2025-11-25` in `initialize`.
+- Neither ends its Sessions. claude.ai opened two when it connected. ChatGPT opened five in its first minute, two at a time. Each Session keeps its Child until the idle timeout, so `public.max_sessions` caps a chat client's use, and the default of 16 is low for ChatGPT.
+
+Not yet observed: how either client refreshes under strict rotation, including whether it retries or races a refresh, and how it recovers when a restart ends its Sessions.
