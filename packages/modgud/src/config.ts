@@ -127,7 +127,7 @@ const configSchema = z
       config.admin.port === 0 ||
       config.admin.port !== config.public.port,
     {
-      message: 'A loopback Admin listener needs a port other than the Public listener's.',
+      message: 'A loopback Admin listener needs a port other than public.port.',
       path: ['admin', 'port'],
     },
   );
