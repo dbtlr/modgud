@@ -138,7 +138,7 @@ export const createPublicListener = ({
   // Every open Session, by id.
   const sessions = new Map<string, Session>();
   // Each Grant's shared Child, by Service and Grant id, from the Grant's
-  // first Session until the Grant ends or Modgud shuts down.
+  // first initialize until the Grant ends or Modgud shuts down.
   const children = new Map<string, GrantChild>();
   // Children that ended for good, until they have exited.
   const ending = new Set<Promise<void>>();

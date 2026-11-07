@@ -294,7 +294,8 @@ describe('a Child that crashes', () => {
     expect(failed.status).toBe(502);
     expect(refused.status).toBe(502);
     expect(childStarts(lines)).toHaveLength(0);
-    expect(lines.some((line) => line.includes(' could not start: '))).toBe(true);
+    // One spawn attempt: the second initialize is refused by the backoff.
+    expect(lines.filter((line) => line.includes(' could not start: '))).toHaveLength(1);
   });
 
   test('a Child that exits before answering initialize fails it with 502, and backs off', async () => {
