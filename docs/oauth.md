@@ -212,8 +212,8 @@ Observed on 2026-11-07, with claude.ai and ChatGPT developer mode each connected
 - Both identify themselves with a Client ID Metadata Document (`https://claude.ai/…` and `https://chatgpt.com/…`), not dynamic registration.
 - Both open the authorization endpoint on `admin.base_url` in the person's browser, so the split between the issuer and the Approval page works for both.
 - Both send `resource` when they exchange the authorization code.
-- Neither sends an `Origin` header on Service requests, so the default empty `public.allowed_origins` serves them.
+- Neither sends an `Origin` header when it opens a Session, and with the default empty `public.allowed_origins` no request from either was refused for its `Origin`.
 - Both request protocol revision `2025-11-25` in `initialize`.
-- Neither ends its Sessions. claude.ai opened two when it connected. ChatGPT opened five in its first minute, two at a time. Each Session keeps its Child until the idle timeout, so `public.max_sessions` caps a chat client's use, and the default of 16 is low for ChatGPT.
+- Neither ended a Session during the five minutes observed. claude.ai opened two when it connected. ChatGPT opened five within about a minute, in bursts of two, two, and one. Each Session keeps its Child until the idle timeout, 30 minutes by default, so at that rate ordinary ChatGPT use would reach the default `public.max_sessions` of 16 within minutes.
 
 Not yet observed: how either client refreshes under strict rotation, including whether it retries or races a refresh, and how it recovers when a restart ends its Sessions.
