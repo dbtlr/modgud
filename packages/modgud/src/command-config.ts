@@ -17,17 +17,23 @@ export const configOption = {
 
 // Reads the configuration file `--config` names, or the default one, and ends
 // the command with a message naming the file when it is missing or invalid.
+// Warns of each retired setting the file still sets.
 export const loadConfig = async (
   host: Pick<Host, 'cwd' | 'home'>,
   option: string | undefined,
-  out: Pick<Out, 'fatal'>,
+  out: Pick<Out, 'fatal' | 'warn'>,
 ): Promise<Config> => {
   const path = option === undefined ? defaultConfigPath(host.home) : resolve(host.cwd, option);
+  let loaded: Awaited<ReturnType<typeof readConfig>>;
   try {
-    return await readConfig(path);
+    loaded = await readConfig(path);
   } catch (error) {
     return out.fatal(loggable(`Invalid configuration in ${path}: ${describeError(error)}`));
   }
+  for (const warning of loaded.warnings) {
+    void out.warn(loggable(`In ${path}: ${warning}`));
+  }
+  return loaded.config;
 };
 
 // Opens the configured OAuth store, or ends the command with a message naming

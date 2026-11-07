@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { parseConfig, resolveStorePath } from './config.ts';
+import { parseConfig, parseConfigWithWarnings, resolveStorePath } from './config.ts';
 
 const HASH = 'a'.repeat(64);
 
@@ -56,8 +56,9 @@ describe('parseConfig', () => {
       allowed_origins: [],
       base_url: 'https://modgud.example.com',
       host: '127.0.0.1',
-      max_sessions: 16,
+      max_sessions_per_grant: 64,
       port: 8470,
+      session_idle_timeout_minutes: 1440,
     });
     expect(config.services.norn).toEqual({
       args: [],
@@ -127,6 +128,38 @@ describe('parseConfig', () => {
     expect(() =>
       parseConfig(configWith({ 'services.norn.idle_timeout_minutes': '10081' })),
     ).toThrow(/idle_timeout_minutes/u);
+  });
+
+  test('refuses a Session idle timeout longer than one week, naming the setting', () => {
+    expect(() =>
+      parseConfig(configWith({ 'public.session_idle_timeout_minutes': '10081' })),
+    ).toThrow(/public\.session_idle_timeout_minutes/u);
+    expect(
+      parseConfig(configWith({ 'public.session_idle_timeout_minutes': '10080' })).public
+        .session_idle_timeout_minutes,
+    ).toBe(10_080);
+  });
+
+  test('refuses a Session limit per Grant below 1, naming the setting', () => {
+    expect(() => parseConfig(configWith({ 'public.max_sessions_per_grant': '0' }))).toThrow(
+      /public\.max_sessions_per_grant/u,
+    );
+  });
+
+  test('accepts the retired public.max_sessions, ignores it, and warns that it is replaced', () => {
+    const { config, warnings } = parseConfigWithWarnings(
+      configWith({ 'public.max_sessions': '16' }),
+    );
+
+    expect(config.public).not.toHaveProperty('max_sessions');
+    expect(config.public.max_sessions_per_grant).toBe(64);
+    expect(warnings).toEqual([
+      'public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is 64.',
+    ]);
+  });
+
+  test('has no warnings for a current configuration', () => {
+    expect(parseConfigWithWarnings(configWith()).warnings).toEqual([]);
   });
 
   test('accepts a token lifetime from 1 to 365 days', () => {

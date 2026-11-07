@@ -274,8 +274,10 @@ export const createPublicListener = ({
     if (closing) {
       return shuttingDown();
     }
-    if (sessions.size + opening.size >= config.public.max_sessions) {
-      log.warn(`Refused a ${serviceName} session: ${String(config.public.max_sessions)} are open.`);
+    if (sessions.size + opening.size >= config.public.max_sessions_per_grant) {
+      log.warn(
+        `Refused a ${serviceName} session: ${String(config.public.max_sessions_per_grant)} are open.`,
+      );
       return jsonRpcError(503, -32_000, 'Too many open sessions', { 'Retry-After': '30' });
     }
     const service = config.services[serviceName];

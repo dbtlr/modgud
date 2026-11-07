@@ -112,7 +112,7 @@ const start = async ({
 
     [public]
     allowed_origins = ${JSON.stringify(origins)}
-    max_sessions = ${String(maxSessions)}
+    max_sessions_per_grant = ${String(maxSessions)}
     base_url = "${PUBLIC}"
 
     [admin]

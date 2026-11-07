@@ -65,8 +65,17 @@ const publicListener = z.strictObject({
       'The Public listener binds loopback only: use 127.0.0.1, ::1, or localhost.',
     )
     .default('127.0.0.1'),
-  max_sessions: z.int().positive().default(16),
+  // Retired: Sessions are now limited per Grant. A configuration that still
+  // sets it loads, with a warning, and the value is ignored.
+  max_sessions: z.unknown().optional(),
+  // The Sessions one Grant may hold, counting those still opening. At the
+  // limit, a new Session evicts the Grant's least recently active one
+  // (ADR-0002).
+  max_sessions_per_grant: z.int().positive().default(64),
   port: z.int().min(0).max(65_535).default(8470),
+  // How long a Session lasts with no activity. At most one week, which keeps
+  // the timer within setTimeout's range.
+  session_idle_timeout_minutes: z.number().positive().max(10_080).default(1440),
 });
 
 // Tailscale's address ranges. 100.64.0.0/10 is also carrier-grade NAT space
@@ -130,9 +139,19 @@ const configSchema = z
       message: 'A loopback Admin listener needs a port other than public.port.',
       path: ['admin', 'port'],
     },
-  );
+  )
+  // Drops the retired settings, with a warning for each one set.
+  .transform(({ public: { max_sessions: retired, ...current }, ...config }) => ({
+    config: { ...config, public: current },
+    warnings:
+      retired === undefined
+        ? []
+        : [
+            `public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is ${String(current.max_sessions_per_grant)}.`,
+          ],
+  }));
 
-export type Config = z.infer<typeof configSchema>;
+export type Config = z.output<typeof configSchema>['config'];
 export type ServiceConfig = Config['services'][string];
 
 // The file `serve` reads when no `--config` names one.
@@ -149,9 +168,10 @@ export const resolveStorePath = (config: Config, home: string) => {
   return path.startsWith('~/') ? join(home, path.slice(2)) : path;
 };
 
-// Parses and validates a configuration file's text. Throws an Error that names
-// every invalid setting by its path.
-export const parseConfig = (text: string): Config => {
+// Parses and validates a configuration file's text, with a warning for each
+// retired setting it still sets. Throws an Error that names every invalid
+// setting by its path.
+export const parseConfigWithWarnings = (text: string): { config: Config; warnings: string[] } => {
   const parsed = configSchema.safeParse(Bun.TOML.parse(text));
   if (!parsed.success) {
     throw new Error(z.prettifyError(parsed.error));
@@ -159,5 +179,7 @@ export const parseConfig = (text: string): Config => {
   return parsed.data;
 };
 
-export const readConfig = async (path: string): Promise<Config> =>
-  parseConfig(await readFile(path, 'utf8'));
+export const parseConfig = (text: string): Config => parseConfigWithWarnings(text).config;
+
+export const readConfig = async (path: string): Promise<{ config: Config; warnings: string[] }> =>
+  parseConfigWithWarnings(await readFile(path, 'utf8'));
