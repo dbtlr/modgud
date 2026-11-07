@@ -32,6 +32,12 @@ export const loggable = (text: string) =>
     })
     .join('');
 
+// Text from a Child or a Caller as a log line may carry it: its first `limit`
+// code points, made loggable.
+export const excerpt = (text: string, limit: number) =>
+  // oxlint-disable-next-line typescript/no-misused-spread -- code points, as loggable counts them
+  loggable([...text].slice(0, limit).join(''));
+
 // An error's message, for a log line or a fatal message.
 export const describeError = (error: unknown) =>
   error instanceof Error ? error.message : String(error);

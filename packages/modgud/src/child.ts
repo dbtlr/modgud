@@ -19,9 +19,12 @@ export type ChildOptions = {
   onFatal: (error: Error) => void;
   // Each line the process writes to stderr.
   onStderr: (line: string) => void;
-  // Called once, when the process has exited for any reason.
-  onExit: () => void;
+  // Called once, when the process has exited for any reason, with its exit
+  // code or the signal that ended it.
+  onExit: (status: ExitStatus) => void;
 };
+
+export type ExitStatus = { code: number | null; signal: string | null };
 
 const asError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
@@ -53,9 +56,17 @@ export class Child {
     void this.#watchExit(process);
   }
 
+  // The process id, once started.
+  get pid() {
+    return this.#process?.pid;
+  }
+
   async #watchExit(process: Bun.Subprocess) {
     await process.exited;
-    this.#options.onExit();
+    this.#options.onExit({
+      code: process.exitCode,
+      signal: process.signalCode === null ? null : String(process.signalCode),
+    });
   }
 
   async #readMessages(stdout: ReadableStream<Uint8Array>) {
