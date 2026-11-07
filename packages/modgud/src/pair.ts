@@ -17,9 +17,9 @@ export const pair = new Command('pair', {
     type: 'string',
     validate: z.coerce.number().int().min(1).max(60),
   })
-  .action(async ({ host, options, out }) => {
-    const config = await loadConfig(host, options.config, out);
-    const store = await openConfiguredStore(config, host, out);
+  .action(async ({ host, log, options, out }) => {
+    const config = await loadConfig(host, options.config, { log, out });
+    const store = await openConfiguredStore(config, host, { log, out });
     try {
       const { code, expiresAt } = store.mintPairingCode(options.minutes);
       const minutes = `${String(options.minutes)} minute${options.minutes === 1 ? '' : 's'}`;

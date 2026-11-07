@@ -1,3 +1,5 @@
+import type { LoggingError } from '@loomcli/plugins/logging';
+
 // The part of Loom's log that the listeners use. `serve` passes its action's
 // log, and Loom's logging plugin records each event; tests pass a recorder.
 export type Log = {
@@ -33,3 +35,22 @@ export const excerpt = (text: string, limit: number) =>
 // An error's message, for a log line or a fatal message.
 export const describeError = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
+
+// Loom's logging plugin drops a record it cannot write and says nothing. This
+// is its `onError`: it prints each distinct failure once, on stderr, which a
+// service manager such as systemd keeps, so a log that stopped being written
+// does not go unnoticed. Repeats of a failure already printed stay quiet.
+export const reportLogFailures = (print: (line: string) => void) => {
+  const printed = new Set<string>();
+  return (error: LoggingError): undefined => {
+    const line =
+      error.kind === 'unresolved-directory'
+        ? `Modgud cannot write its log: ${error.variable ?? 'HOME'} is not set.`
+        : `Modgud cannot write its log (${error.kind}) at ${error.path ?? 'an unknown path'}: ${describeError(error.cause)}`;
+    if (!printed.has(line)) {
+      printed.add(line);
+      print(loggable(line));
+    }
+    return undefined;
+  };
+};

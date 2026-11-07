@@ -9,9 +9,9 @@ export const revoke = new Command('revoke', {
   description: 'Revoke every approved chat-client connection and unspent Pairing code.',
 })
   .option('config', configOption)
-  .action(async ({ host, options, out }) => {
-    const config = await loadConfig(host, options.config, out);
-    const store = await openConfiguredStore(config, host, out);
+  .action(async ({ host, log, options, out }) => {
+    const config = await loadConfig(host, options.config, { log, out });
+    const store = await openConfiguredStore(config, host, { log, out });
     try {
       const revoked = store.revokeAll();
       await out.print(`Revoked ${String(revoked)} authorization${revoked === 1 ? '' : 's'}.`);

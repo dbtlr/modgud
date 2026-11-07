@@ -160,6 +160,7 @@ test('serve starts with the retired public.max_sessions set, and warns that it i
   const { configPath } = await writeServeConfig('retired', 'max_sessions = 16');
   const { child, lines } = await startServe(configPath);
   try {
+    await readUntil(lines, /^warn In \S+: public\.max_sessions is ignored: /u);
     child.kill('SIGTERM');
     await readUntil(lines, /^info Stopped\.$/u);
     expect(await new Response(child.stderr).text()).toContain(

@@ -74,8 +74,8 @@ export const serve = new Command('serve', {
       log.info(message);
       await out.print(message);
     };
-    const config = await loadConfig(host, options.config, out);
-    const store = await openConfiguredStore(config, host, out);
+    const config = await loadConfig(host, options.config, { log, out });
+    const store = await openConfiguredStore(config, host, { log, out });
     const publicListener = createPublicListener({
       config,
       log,
