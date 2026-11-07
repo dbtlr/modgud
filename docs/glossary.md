@@ -41,7 +41,7 @@ The listener that binds localhost, is reached only through the tunnel, and serve
 _Avoid_: Frontend, gateway
 
 **Admin listener**:
-The listener that binds a tailnet address only and serves the Approval page, the admin API, and the admin panel.
+The listener that binds a tailnet address, or loopback behind a tailnet forward, and serves the Approval page, the admin API, and the admin panel.
 _Avoid_: Private port, backend
 
 **Authorization**:

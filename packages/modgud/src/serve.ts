@@ -49,6 +49,9 @@ export const listen = (
       hostname: host,
       idleTimeout,
       port,
+      // Bun lets a second server bind a host and port another already holds,
+      // and splits the traffic; refuse it instead (ADR-0004).
+      reusePort: false,
     });
   } catch (error) {
     return fail(`Could not listen on ${host}:${String(port)}: ${describeError(error)}`);

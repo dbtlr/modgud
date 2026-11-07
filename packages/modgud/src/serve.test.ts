@@ -264,3 +264,26 @@ test('a listener answers an error that escapes its handler with a plain HTTP 500
     await server.stop(true);
   }
 });
+
+// A listener failure as a thrown error, so a test can expect it.
+const fail = (message: string): never => {
+  throw new Error(message);
+};
+
+test('a listener refuses a host and port another listener already holds', async () => {
+  const log = { info: () => undefined, warn: () => undefined };
+  const options = {
+    fetch: () => Promise.resolve(new Response('ok')),
+    host: '127.0.0.1',
+    idleTimeout: 5,
+    log,
+  };
+  const first = listen({ ...options, port: 0 }, fail);
+  try {
+    expect(() => listen({ ...options, port: first.port ?? 0 }, fail)).toThrow(
+      `Could not listen on 127.0.0.1:${String(first.port)}`,
+    );
+  } finally {
+    await first.stop(true);
+  }
+});
