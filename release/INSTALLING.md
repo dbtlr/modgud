@@ -20,6 +20,8 @@ It also downloads `modgud-NOTICES.txt` and verifies both files against SHA256SUM
 Full notices accompany the executable as `modgud.NOTICES.txt` in the same directory.
 It stages both downloads before installing notices and renaming the executable in the destination directory.
 A failed binary or notice download or checksum preserves the installed executable and notices.
+If the final executable rename fails, the installer restores the previous notices.
+If that recovery also fails, the error identifies the retained recovery file.
 It records binary installation under the application's state directory.
 It does not create configuration, migrate stores, or manage the Service or tunnel.
 An explicit version is mandatory. Repeating the command installs that pinned version again.
@@ -75,3 +77,18 @@ Manual extraction uses the runtime archive, retaining its LICENSE and notices di
 The notice asset includes application, npm, Bun component, and relinking notices.
 Distribute the version-matched rebuild-input archive with the runtime and source archives.
 That archive contains pinned sources and build recipes, not a promise of future source hosting.
+
+## Package a committed source revision
+
+Use a Git checkout whose HEAD is the intended release revision:
+
+```sh
+python3 release/package.py --source /absolute/source-checkout --binary /absolute/modgud --notices /absolute/reviewed-notices --out /absolute/empty-output
+```
+
+The source archive reads committed Git objects at HEAD. Uncommitted edits, ignored files, and untracked local state are excluded.
+Symlinks and submodules in source, and symlinks in the notice input, are rejected.
+The notice directory is an explicit distribution input; supply only reviewed notices.
+Archive names follow the committed package version. Both provenance files record the selected source commit and the supplied executable's checksum.
+These records identify packaging inputs; they do not prove that the supplied executable was built from that commit.
+The packager does not generate or claim a source diff. A separately reviewed release may attach one.

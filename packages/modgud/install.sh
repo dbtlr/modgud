@@ -235,17 +235,35 @@ install_binary() {
   binary_asset=$asset
   asset=$app-NOTICES.txt
   read_listed_digest
-  notice_download=$(mktemp "$dir/.$app.notices.XXXXXX") || fail 'Cannot stage notices.'
+  notice_download=$(mktemp "$dir/.$app.notices.XXXXXX") || fail "Cannot stage notices in $dir. Choose a writable directory with --dir."
   fetch "$base/$asset" "$notice_download"
   actual=$(sha256_of "$notice_download")
-  [ "${actual%% *}" = "$expected" ] || fail 'Notice checksum mismatch.'
-  [ -s "$notice_download" ] || fail 'Notices are empty.'
-  chmod 644 "$notice_download"
-  mv -f "$notice_download" "$target.NOTICES.txt"
+  [ "${actual%% *}" = "$expected" ] || fail "Notice checksum mismatch. Rerun the installer and report repeated failures to the maintainers of $repository."
+  [ -s "$notice_download" ] || fail "Notices are empty. Report the release to the maintainers of $repository or select another release."
+  chmod 755 "$download" || fail "Cannot prepare the executable. Check permissions in $dir and rerun the installer."
+  chmod 644 "$notice_download" || fail "Cannot prepare notices. Check permissions in $dir and rerun the installer."
+  notice_backup=$(mktemp "$dir/.$app.previous-notices.XXXXXX") || fail "Cannot stage recovery notices. Check permissions in $dir and rerun the installer."
+  had_notices=0
+  if [ -e "$target.NOTICES.txt" ]; then
+    cp -p "$target.NOTICES.txt" "$notice_backup" || fail "Cannot preserve existing notices. Check permissions in $dir and rerun the installer."
+    had_notices=1
+  fi
+  mv -f "$notice_download" "$target.NOTICES.txt" || fail "Cannot install notices. Check permissions in $dir and rerun the installer."
   notice_download=
   asset=$binary_asset
-  chmod 755 "$download"
-  mv -f "$download" "$target"
+  if ! mv -f "$download" "$target"; then
+    if [ "$had_notices" = 1 ]; then
+      recovery=$notice_backup
+      if ! mv -f "$notice_backup" "$target.NOTICES.txt"; then
+        notice_backup=
+        fail "Cannot restore previous notices. Recover them from $recovery before rerunning the installer."
+      fi
+      notice_backup=
+    else
+      rm -f "$target.NOTICES.txt" || fail "Cannot remove new notices after executable installation failed. Check permissions in $dir before rerunning the installer."
+    fi
+    fail "Cannot install the executable; previous notices were restored. Check permissions in $dir and rerun the installer."
+  fi
   download=
 }
 
@@ -276,6 +294,7 @@ advise_path() {
 }
 
 cleanup() {
+  if [ -n "${notice_backup:-}" ]; then rm -f "$notice_backup"; fi
   if [ -n "${notice_download:-}" ]; then rm -f "$notice_download"; fi
   if [ -n "${download:-}" ]; then rm -f "$download"; fi
   if [ -n "${sums:-}" ]; then rm -f "$sums"; fi

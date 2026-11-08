@@ -21,7 +21,7 @@ if u.endswith('/modgud-NOTICES.txt'):
 if u.endswith('/SHA256SUMS'):
  digest=hashlib.sha256((p/'payload').read_bytes()).hexdigest() if not os.environ.get('BAD_DIGEST') else '0'*64
  print(hashlib.sha256(b'full notices').hexdigest()+'  modgud-NOTICES.txt')
- for asset in ['modgud-linux-x64','modgud-darwin-arm64','modgud-darwin-x64']:print(digest+'  '+asset)
+ print(digest+'  modgud-linux-x64')
 else:sys.stdout.buffer.write((p/'payload').read_bytes())
 ''');curl.chmod(0o700)
   uname=self.bin/'uname';uname.write_text('#!/usr/bin/env python3\nimport os,sys\nprint(os.environ.get("FIXTURE_OS","Linux") if sys.argv[1]=="-s" else os.environ.get("FIXTURE_ARCH","x86_64"))\n');uname.chmod(0o700)
@@ -47,4 +47,20 @@ else:sys.stdout.buffer.write((p/'payload').read_bytes())
   for values in [dict(FIXTURE_OS='Darwin',FIXTURE_ARCH='arm64'),dict(FIXTURE_ARCH='aarch64'),dict(FIXTURE_LIBC='musl'),dict(FIXTURE_OS='FreeBSD')]:
    with self.subTest(values=values):
     p=self.invoke('0.1.0',**values);self.assertNotEqual(p.returncode,0);self.assertIn(b'Linux x64 with glibc',p.stderr);self.assertFalse((self.root/'urls').exists());self.assertEqual(self.target.read_bytes(),b'old binary');self.assertEqual(self.notice.read_bytes(),b'old notices')
+ def fail_move_to(self,target):
+  move=self.bin/'mv'
+  move.write_text('#!/usr/bin/env python3\nimport os,sys\nif sys.argv[-1]==os.environ["FAIL_MOVE_TARGET"]:sys.exit(1)\nos.execv("/bin/mv",["mv",*sys.argv[1:]])\n')
+  move.chmod(0o700)
+  self.env['FAIL_MOVE_TARGET']=str(target)
+ def test_binary_move_failure_preserves_binary_and_notices(self):
+  self.fail_move_to(self.target)
+  for existing in [True,False]:
+   with self.subTest(existing_notices=existing):
+    if not existing:self.notice.unlink()
+    p=self.invoke('0.1.0');self.assertNotEqual(p.returncode,0);self.assertEqual(self.target.read_bytes(),b'old binary')
+    if existing:self.assertEqual(self.notice.read_bytes(),b'old notices')
+    else:self.assertFalse(self.notice.exists())
+ def test_notice_move_failure_preserves_binary_and_notices(self):
+  self.fail_move_to(self.notice)
+  p=self.invoke('0.1.0');self.assertNotEqual(p.returncode,0);self.assertEqual(self.target.read_bytes(),b'old binary');self.assertEqual(self.notice.read_bytes(),b'old notices')
 if __name__=='__main__':unittest.main()
