@@ -39,8 +39,8 @@ export class Child {
     this.#options = options;
   }
 
-  // Starts the process. Throws when it cannot be started, for example when
-  // the command or working directory does not exist.
+  // Starts the process. Immediate spawn errors throw; failures after the
+  // runtime creates a process are reported through onExit.
   start() {
     const { args, command, cwd, environment } = this.#options;
     const process = Bun.spawn([command, ...args], {

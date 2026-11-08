@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 
+import packageMetadata from '../package.json';
 import {
   childStarts,
   connect,
@@ -144,7 +145,7 @@ describe('initialize', () => {
       method: 'initialize',
       params: {
         capabilities: {},
-        clientInfo: { name: 'modgud', version: '0.0.0' },
+        clientInfo: { name: 'modgud', version: packageMetadata.version },
         protocolVersion: '2025-11-25',
       },
     });
@@ -293,9 +294,18 @@ describe('a Child that crashes', () => {
 
     expect(failed.status).toBe(502);
     expect(refused.status).toBe(502);
-    expect(childStarts(lines)).toHaveLength(0);
-    // One spawn attempt: the second initialize is refused by the backoff.
-    expect(lines.filter((line) => line.includes(' could not start: '))).toHaveLength(1);
+    const started = childStarts(lines);
+    const rejected = lines.filter((line) => line.includes(' could not start: '));
+    // A runtime can reject spawn immediately or report a failed exec through process exit.
+    // Either path makes one attempt; backoff refuses the second initialize.
+    expect(started.length + rejected.length).toBe(1);
+    await Promise.all(
+      started.map(async (line) => {
+        const pid = Number(/ pid (\d+)\.$/u.exec(line)?.[1]);
+        expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+        await waitFor(() => !isAlive(pid));
+      }),
+    );
   });
 
   test('a Child that exits before answering initialize fails it with 502, and backs off', async () => {
