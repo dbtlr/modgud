@@ -18,6 +18,7 @@ import type {
   RequestId,
 } from '@modelcontextprotocol/server';
 
+import packageMetadata from '../package.json';
 import { Backoff } from './backoff.ts';
 import { Child } from './child.ts';
 import type { ExitStatus } from './child.ts';
@@ -64,7 +65,7 @@ export const CHILD_LIMITS: ChildLimits = {
 // The longest stderr line or Child notification a log line carries.
 const CHILD_LOG_LIMIT = 2000;
 
-const MODGUD_INFO = { name: 'modgud', version: '0.0.0' };
+const MODGUD_INFO = { name: 'modgud', version: packageMetadata.version };
 
 // What a Grant's Child needs of each Session it serves.
 export type GrantSession = {

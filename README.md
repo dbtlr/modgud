@@ -6,6 +6,14 @@ Modgud is an MCP auth proxy. It runs local stdio MCP servers, one child process 
 
 Status: in build. `modgud serve` serves stdio MCP servers over Streamable HTTP to callers holding a static bearer token or OAuth tokens from Modgud's own OAuth server, approved with a Pairing code. Grants are not built yet: every credential belongs to one temporary harness that covers one Service.
 
+## Install the Linux prerelease
+
+The initial release targets Linux x64 with glibc. Use the verified installer and retain the accompanying runtime notices and rebuild inputs.
+See [installation and recovery](release/INSTALLING.md) and [runtime rebuild instructions](release/RELINKING.md).
+
+`bun run build` produces the Linux x64 release binary, including when invoked on macOS.
+For a host-native development binary, run `bun run --cwd packages/modgud loom build --release --out ../../dist/modgud`.
+
 ## Running Modgud
 
 `modgud serve` reads `~/.config/modgud/modgud.toml`, or the file that `--config` or `MODGUD_CONFIG` names. It serves each configured Service at `/<service>/mcp` on the Public listener, and the OAuth Approval page at `/authorize` on the Admin listener, until it receives SIGTERM or SIGINT. On shutdown it ends every Session, stops every Child, and stops both listeners.
