@@ -88,40 +88,24 @@ parse_arguments() {
 }
 
 unsupported_platform() {
-  fail "This platform, $os $arch, has no release asset. Run the installer on Linux or macOS on x64 or arm64."
+  fail "This release supports Linux x64 with glibc; detected $os $arch."
 }
 
 detect_platform() {
   os=$(uname -s)
   arch=$(uname -m)
-  case $os in
-    Darwin)
-      case $arch in
-        arm64) platform=darwin-arm64 ;;
-        x86_64)
-          if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || :)" = 1 ]; then
-            platform=darwin-arm64
-          else
-            platform=darwin-x64
-          fi
-          ;;
-        *) unsupported_platform ;;
-      esac
-      ;;
-    Linux)
-      case $arch in
-        x86_64 | amd64) platform=linux-x64 ;;
-        aarch64 | arm64) platform=linux-arm64 ;;
-        *) unsupported_platform ;;
-      esac
-      if command -v ldd >/dev/null 2>&1; then
-        case $(ldd --version 2>&1 || :) in
-          *musl*) platform=$platform-musl ;;
-        esac
-      fi
-      ;;
+  [ "$os" = Linux ] || unsupported_platform
+  case $arch in
+    x86_64 | amd64) ;;
     *) unsupported_platform ;;
   esac
+  command -v ldd >/dev/null 2>&1 || unsupported_platform
+  case $(ldd --version 2>&1 || :) in
+    *musl*) unsupported_platform ;;
+    *GLIBC* | *glibc* | *'GNU libc'*) ;;
+    *) unsupported_platform ;;
+  esac
+  platform=linux-x64
   asset=$app-$platform
 }
 

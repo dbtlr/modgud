@@ -27,6 +27,10 @@ jobs:
           version: 2026.10.2
       - run: bun install --frozen-lockfile
       - run: bun run verify
+      - name: Verify release installer and packaging
+        run: |
+          env -u TMPDIR python3 release/test-installer.py
+          python3 release/test-package.py
       - name: Compile the Modgud binary
         # bash runs with -e, so a binary that fails fails the step; its whole output must match the package version.
         shell: bash
