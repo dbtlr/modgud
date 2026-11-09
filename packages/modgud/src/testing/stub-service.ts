@@ -276,6 +276,28 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  'flood',
+  {
+    description: 'Report progress the given number of times, each with 1 MiB of text, then finish.',
+    inputSchema: z.object({ count: z.number() }),
+  },
+  async ({ count }, context) => {
+    const progressToken = context.mcpReq._meta?.progressToken;
+    const message = 'f'.repeat(1024 * 1024);
+    for (let tick = 1; tick <= count; tick += 1) {
+      if (progressToken !== undefined) {
+        // oxlint-disable-next-line no-await-in-loop -- in order, one at a time
+        await context.mcpReq.notify({
+          method: 'notifications/progress',
+          params: { message, progress: tick, progressToken, total: count },
+        });
+      }
+    }
+    return text('flooded');
+  },
+);
+
 // More than the 10 MiB a Child's single message may take.
 server.registerTool('oversized', { description: 'Return an 11 MiB result.' }, () =>
   text('x'.repeat(11 * 1024 * 1024)),

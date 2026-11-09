@@ -36,6 +36,7 @@ describe('a Caller with the harness token', () => {
       'echo',
       'environment',
       'exit',
+      'flood',
       'list-changed',
       'log',
       'oversized',
