@@ -10,10 +10,11 @@ import type { Log } from './log.ts';
 import { createPublicListener } from './public-listener.ts';
 
 // How long the Public listener keeps a connection with no traffic, in
-// seconds. Output waiting to be sent is not traffic: a connection whose Caller
-// stops reading ends after this long, even while output waits for it
-// (ADR-0002). The MCP transport writes an SSE keep-alive every 15 seconds, so
-// a stream whose Caller keeps reading stays open.
+// seconds. Output that waits because the socket buffers are full is not
+// traffic: a Caller that stops reading keeps its connection only until those
+// buffers fill, then loses it after this long (ADR-0002). The MCP transport
+// writes an SSE keep-alive every 15 seconds, so a stream whose Caller keeps
+// reading stays open.
 export const CONNECTION_IDLE_SECONDS = 60;
 
 // How long the Admin listener lets a connection sit silent, in seconds. Its

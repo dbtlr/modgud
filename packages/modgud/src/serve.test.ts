@@ -397,8 +397,10 @@ test('a listener refuses a host and port another listener already holds', async 
   }
 });
 
-// An idle timeout short enough for a test. Bun's idle timer is coarse: at 4
-// seconds or less it can end a connection that is still taking output.
+// An idle timeout short enough for a test. Bun's idle timer works in steps of
+// about 4 seconds, so a short timeout can end a connection that is still
+// taking output: at 4 seconds or less, or when writes come nearly a whole
+// timeout apart. The reading Caller here gets a write every second.
 const TEST_IDLE_SECONDS = 8;
 
 // A response body that keeps producing until the server cancels it. `burst`
