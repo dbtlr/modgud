@@ -9,10 +9,12 @@ import { describeError, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { createPublicListener } from './public-listener.ts';
 
-// How long the Public listener lets a connection sit silent, in seconds. The
-// MCP transport writes an SSE keep-alive every 15 seconds, so an open stream
-// is never cut off.
-const CONNECTION_IDLE_SECONDS = 60;
+// How long the Public listener keeps a connection with no traffic, in
+// seconds. Output waiting to be sent is not traffic: a connection whose Caller
+// stops reading ends after this long, even while output waits for it
+// (ADR-0002). The MCP transport writes an SSE keep-alive every 15 seconds, so
+// a stream whose Caller keeps reading stays open.
+export const CONNECTION_IDLE_SECONDS = 60;
 
 // How long the Admin listener lets a connection sit silent, in seconds. Its
 // slowest answer waits on a metadata fetch of at most 5 seconds.

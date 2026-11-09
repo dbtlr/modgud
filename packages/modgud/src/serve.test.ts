@@ -1,5 +1,7 @@
 import { afterAll, expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { connect } from 'node:net';
+import type { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +12,7 @@ import { s256Challenge } from './pkce.ts';
 import { listen } from './serve.ts';
 import { openStore } from './store.ts';
 import { appEnvironment, logPath } from './testing/app-environment.ts';
+import { waitFor } from './testing/listener-harness.ts';
 
 const directory = await mkdtemp(join(tmpdir(), 'modgud-serve-'));
 afterAll(async () => {
@@ -393,3 +396,112 @@ test('a listener refuses a host and port another listener already holds', async 
     await first.stop(true);
   }
 });
+
+// An idle timeout short enough for a test. Bun's idle timer is coarse: at 4
+// seconds or less it can end a connection that is still taking output.
+const TEST_IDLE_SECONDS = 8;
+
+// A response body that keeps producing until the server cancels it. `burst`
+// bytes go out at once, so a Caller that stops reading backs the connection
+// up past every socket buffer; then a keepalive goes out every second, as the
+// MCP transport writes one while a stream is open.
+const endlessBody = (burst: number, onCancel: () => void) => {
+  const chunk = new Uint8Array(1024 * 1024);
+  const keepalive = new TextEncoder().encode(': keepalive\n\n');
+  let sent = 0;
+  return new ReadableStream<Uint8Array>(
+    {
+      cancel: onCancel,
+      pull: async (controller) => {
+        if (sent < burst) {
+          sent += chunk.byteLength;
+          controller.enqueue(chunk);
+          return;
+        }
+        await Bun.sleep(1000);
+        controller.enqueue(keepalive);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+};
+
+// A raw HTTP connection that sends one GET for `path`. A stalled Caller stops
+// reading at the first bytes it receives.
+const rawGet = (port: number, path: string, { stall }: { stall: boolean }) => {
+  const socket: Socket = connect(port, '127.0.0.1', () => {
+    socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n`);
+  });
+  const state = { bytes: 0, ended: false };
+  socket.on('data', (data: Buffer) => {
+    state.bytes += data.byteLength;
+  });
+  if (stall) {
+    socket.once('data', () => socket.pause());
+  }
+  socket.on('end', () => {
+    state.ended = true;
+  });
+  return { socket, state };
+};
+
+test(
+  'a listener ends a connection whose Caller stops reading, while keepalives still arrive, and keeps one that reads',
+  async () => {
+    const log = { info: () => undefined, warn: () => undefined };
+    const cancelled = { reading: 0, stalled: 0 };
+    const started = performance.now();
+    const server = listen(
+      {
+        fetch: (request) =>
+          Promise.resolve(
+            new URL(request.url).pathname === '/stalled'
+              ? new Response(
+                  endlessBody(64 * 1024 * 1024, () => {
+                    cancelled.stalled = performance.now();
+                  }),
+                )
+              : new Response(
+                  endlessBody(0, () => {
+                    cancelled.reading = performance.now();
+                  }),
+                ),
+          ),
+        host: '127.0.0.1',
+        idleTimeout: TEST_IDLE_SECONDS,
+        log,
+        port: 0,
+      },
+      fail,
+    );
+    const port = server.port ?? 0;
+    const stalled = rawGet(port, '/stalled', { stall: true });
+    const reading = rawGet(port, '/reading', { stall: false });
+    try {
+      // The server ends the stalled response no sooner than its idle timeout,
+      // though a keepalive reached its body every second.
+      await waitFor(() => cancelled.stalled > 0, (TEST_IDLE_SECONDS * 2 + 4) * 1000);
+      expect(cancelled.stalled - started).toBeGreaterThanOrEqual((TEST_IDLE_SECONDS - 1) * 1000);
+      // It closed the connection too: the Caller, reading again, gets what the
+      // sockets hold and then the end of the connection, well short of the burst.
+      stalled.socket.resume();
+      await waitFor(() => stalled.state.ended, 10_000);
+      expect(stalled.state.bytes).toBeLessThan(64 * 1024 * 1024);
+
+      // The reading Caller has outlived the idle timeout and keeps its stream.
+      await waitFor(
+        () => performance.now() - started > (TEST_IDLE_SECONDS + 4) * 1000,
+        (TEST_IDLE_SECONDS + 4) * 1000,
+      );
+      expect(reading.state.ended).toBe(false);
+      expect(cancelled.reading).toBe(0);
+      const before = reading.state.bytes;
+      await waitFor(() => reading.state.bytes > before, 3000);
+    } finally {
+      stalled.socket.destroy();
+      reading.socket.destroy();
+      await server.stop(true);
+    }
+  },
+  { timeout: (TEST_IDLE_SECONDS * 4 + 20) * 1000 },
+);
