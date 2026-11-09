@@ -1,8 +1,25 @@
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/server';
 import type { JSONRPCMessage } from '@modelcontextprotocol/server';
 
+import { CHILD_LOG_LIMIT } from './log.ts';
+
 // How long a Child gets to exit after SIGTERM before it is killed.
 const STOP_GRACE_MS = 2000;
+
+// The first `limit` code points of `text`, and how many that is. It reads no
+// further than it needs.
+const leadingCodePoints = (text: string, limit: number) => {
+  let count = 0;
+  let end = 0;
+  for (const character of text) {
+    if (count === limit) {
+      break;
+    }
+    count += 1;
+    end += character.length;
+  }
+  return { count, head: text.slice(0, end) };
+};
 
 export type ChildOptions = {
   args: string[];
@@ -94,16 +111,40 @@ export class Child {
     }
   }
 
+  // Reports each stderr line, holding at most the CHILD_LOG_LIMIT code points of
+  // the line in progress that a log line can carry (ADR-0002). A longer line is
+  // reported once it reaches that length, and the rest of it is dropped. Each
+  // chunk is split on its own, so a long line costs time linear in its length.
   async #readStderr(stderr: ReadableStream<Uint8Array>) {
     let pending = '';
+    let pendingCount = 0;
+    // Set once the line in progress was reported at the limit, until its newline.
+    let dropping = false;
     for await (const text of stderr.pipeThrough(new TextDecoderStream())) {
-      const lines = `${pending}${text}`.split('\n');
-      pending = lines.pop() ?? '';
-      for (const line of lines) {
-        this.#options.onStderr(line);
+      const parts = text.split('\n');
+      for (const [index, part] of parts.entries()) {
+        if (!dropping && part !== '') {
+          const { count, head } = leadingCodePoints(part, CHILD_LOG_LIMIT - pendingCount);
+          pending += head;
+          pendingCount += count;
+          if (pendingCount === CHILD_LOG_LIMIT) {
+            this.#options.onStderr(pending);
+            pending = '';
+            pendingCount = 0;
+            dropping = true;
+          }
+        }
+        if (index < parts.length - 1) {
+          if (!dropping) {
+            this.#options.onStderr(pending);
+          }
+          pending = '';
+          pendingCount = 0;
+          dropping = false;
+        }
       }
     }
-    if (pending !== '') {
+    if (!dropping && pending !== '') {
       this.#options.onStderr(pending);
     }
   }

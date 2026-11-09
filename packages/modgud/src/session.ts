@@ -7,6 +7,7 @@ import {
 } from '@modelcontextprotocol/server';
 import type { JSONRPCMessage, RequestId } from '@modelcontextprotocol/server';
 
+import { boundStream } from './bounded-stream.ts';
 import type { GrantChild, GrantSession } from './grant-child.ts';
 import { loggable } from './log.ts';
 import type { Log } from './log.ts';
@@ -29,6 +30,10 @@ export type SessionEndReason =
   | 'shutdown';
 
 export type SessionEndHandler = (session: Session, reason: SessionEndReason) => void;
+
+// The most output Modgud holds for one of a Caller's streams, not yet handed
+// to the HTTP connection, when more arrives (ADR-0002).
+export const STREAM_LIMIT_BYTES = 1024 * 1024;
 
 // Orders Sessions by when each was last active.
 let activityClock = 0;
@@ -126,13 +131,36 @@ export class Session implements GrantSession {
       this.#given = answer.given;
       this.#touch();
     }
+    // The initialize stream carries only Modgud's answer, so it needs no bound.
     return response;
   }
 
   // Answers one HTTP request on this Session.
   async handle(request: Request): Promise<Response> {
     this.#touch();
-    return this.#http.handleRequest(request);
+    return this.#bounded(await this.#http.handleRequest(request));
+  }
+
+  // An event-stream response whose body holds a bounded amount for a Caller
+  // that stops reading it. Other responses pass through.
+  #bounded(response: Response) {
+    const type = response.headers.get('Content-Type') ?? '';
+    if (response.body === null || !type.startsWith('text/event-stream')) {
+      return response;
+    }
+    const body = boundStream(response.body, {
+      limitBytes: STREAM_LIMIT_BYTES,
+      onOverflow: () => {
+        this.#log.warn(
+          `${this.#label} ended a stream its Caller stopped reading, with more than ${String(STREAM_LIMIT_BYTES / 1024 / 1024)} MiB unsent.`,
+        );
+      },
+    });
+    return new Response(body, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
   }
 
   // Activity is an HTTP request on the Session, or a message that answers or

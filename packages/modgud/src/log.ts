@@ -26,6 +26,10 @@ export const loggable = (text: string) =>
     })
     .join('');
 
+// The most code points of a Child's text, such as one stderr line, that a log
+// line carries (ADR-0002).
+export const CHILD_LOG_LIMIT = 2000;
+
 // Text from a Child or a Caller as a log line may carry it: its first `limit`
 // code points, made loggable.
 export const excerpt = (text: string, limit: number) =>
