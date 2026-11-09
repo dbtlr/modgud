@@ -50,6 +50,8 @@ export const boundStream = (
 
   const overflow = () => {
     stopped = true;
+    // Free what it held now: the HTTP server may keep this stream, and the
+    // connection, long after it ends.
     held.length = 0;
     heldBytes = 0;
     void cancelQuietly(reader);

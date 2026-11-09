@@ -23,7 +23,7 @@ import { Backoff } from './backoff.ts';
 import { Child } from './child.ts';
 import type { ExitStatus } from './child.ts';
 import type { ServiceConfig } from './config.ts';
-import { excerpt, loggable } from './log.ts';
+import { CHILD_LOG_LIMIT, excerpt, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import {
   CHILD_PROTOCOL_VERSION,
@@ -61,9 +61,6 @@ export const CHILD_LIMITS: ChildLimits = {
   initializeTimeoutMs: 30_000,
   requestsPerGrant: 64,
 };
-
-// The longest stderr line or Child notification a log line carries.
-const CHILD_LOG_LIMIT = 2000;
 
 const MODGUD_INFO = { name: 'modgud', version: packageMetadata.version };
 

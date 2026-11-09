@@ -54,8 +54,11 @@ test('a stream its Caller stops reading is ended, and the Grant keeps serving', 
   );
   try {
     await waitFor(() => lines.some((line) => line.includes('stopped reading')), 20_000);
-    const answer = await requestOn(url, bystander.headers, toolCall(2, 'echo', { text: 'still' }));
-    expect(JSON.stringify(answer.messages)).toContain('still');
+    // The Session whose stream ended stays open, and so does every other.
+    const own = await requestOn(url, stalled.headers, toolCall(2, 'echo', { text: 'mine' }));
+    expect(JSON.stringify(own.messages)).toContain('mine');
+    const other = await requestOn(url, bystander.headers, toolCall(3, 'echo', { text: 'theirs' }));
+    expect(JSON.stringify(other.messages)).toContain('theirs');
   } finally {
     socket.terminate();
   }

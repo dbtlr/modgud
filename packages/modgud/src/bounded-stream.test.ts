@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 
 import { boundStream } from './bounded-stream.ts';
+import { rejectionOf } from './testing/listener-harness.ts';
 
 const bytes = (length: number, fill = 97) => new Uint8Array(length).fill(fill);
 
@@ -87,6 +88,26 @@ test('chunks a reader never reads overflow only once the held bytes pass the lim
   expect(await readAll(relayed)).toEqual([]);
 });
 
+test('a stream holding exactly the limit takes another chunk', async () => {
+  const source = controlledSource();
+  let overflows = 0;
+  boundStream(source.stream, {
+    limitBytes: 10,
+    onOverflow: () => {
+      overflows += 1;
+    },
+  });
+  for (const length of [5, 5, 1]) {
+    source.controller.enqueue(bytes(length));
+    // oxlint-disable-next-line no-await-in-loop -- one chunk at a time
+    await settle();
+  }
+  expect(overflows).toBe(0);
+  source.controller.enqueue(bytes(1));
+  await settle();
+  expect(overflows).toBe(1);
+});
+
 test('a keepalive counts as output toward the bound', async () => {
   const source = controlledSource();
   let overflows = 0;
@@ -114,5 +135,5 @@ test('a source that fails fails the relayed stream', async () => {
   const source = controlledSource();
   const relayed = boundStream(source.stream, { limitBytes: 10, onOverflow: () => undefined });
   source.controller.error(new Error('broken'));
-  expect(readAll(relayed)).rejects.toThrow('broken');
+  expect(await rejectionOf(readAll(relayed))).toBe('broken');
 });

@@ -22,7 +22,7 @@ const runScript = (script: string) => {
   return { child, exited: exited.promise, lines };
 };
 
-test('a stderr line past 4096 code points is reported at once, cut, and its rest dropped', async () => {
+test('a stderr line past 2000 code points is reported at once, cut, and its rest dropped', async () => {
   // Half the line, a pause, the rest of it, then a short line.
   const { exited, lines } = runScript(`
     process.stderr.write('y'.repeat(10000));
@@ -30,17 +30,17 @@ test('a stderr line past 4096 code points is reported at once, cut, and its rest
     process.stderr.write('y'.repeat(10000) + '\\nnext\\n');
   `);
   await waitFor(() => lines.length > 0);
-  expect(lines).toEqual(['y'.repeat(4096)]);
+  expect(lines).toEqual(['y'.repeat(2000)]);
   await exited;
   await waitFor(() => lines.length > 1);
-  expect(lines).toEqual(['y'.repeat(4096), 'next']);
+  expect(lines).toEqual(['y'.repeat(2000), 'next']);
 });
 
 test('the stderr cap counts code points, not UTF-16 code units', async () => {
-  const { exited, lines } = runScript(`process.stderr.write('😀'.repeat(5000) + '\\n');`);
+  const { exited, lines } = runScript(`process.stderr.write('😀'.repeat(3000) + '\\n');`);
   await exited;
   await waitFor(() => lines.length > 0);
-  expect(lines).toEqual(['😀'.repeat(4096)]);
+  expect(lines).toEqual(['😀'.repeat(2000)]);
 });
 
 test('a stderr line with no newline at exit is still reported', async () => {

@@ -131,7 +131,8 @@ export class Session implements GrantSession {
       this.#given = answer.given;
       this.#touch();
     }
-    return this.#bounded(response);
+    // The initialize stream carries only Modgud's answer, so it needs no bound.
+    return response;
   }
 
   // Answers one HTTP request on this Session.
@@ -151,7 +152,7 @@ export class Session implements GrantSession {
       limitBytes: STREAM_LIMIT_BYTES,
       onOverflow: () => {
         this.#log.warn(
-          `${this.#label} ended a stream its Caller stopped reading, with more than 1 MiB unsent.`,
+          `${this.#label} ended a stream its Caller stopped reading, with more than ${String(STREAM_LIMIT_BYTES / 1024 / 1024)} MiB unsent.`,
         );
       },
     });

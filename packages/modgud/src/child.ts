@@ -1,12 +1,10 @@
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/server';
 import type { JSONRPCMessage } from '@modelcontextprotocol/server';
 
+import { CHILD_LOG_LIMIT } from './log.ts';
+
 // How long a Child gets to exit after SIGTERM before it is killed.
 const STOP_GRACE_MS = 2000;
-
-// The most code points of one stderr line Modgud holds (ADR-0002). A longer
-// line is reported once it reaches this length, and the rest of it dropped.
-export const STDERR_LINE_LIMIT = 4096;
 
 // The first `limit` code points of `text`, and how many that is. It reads no
 // further than it needs.
@@ -113,9 +111,10 @@ export class Child {
     }
   }
 
-  // Reports each stderr line, holding at most STDERR_LINE_LIMIT code points of
-  // the line in progress. Each chunk is split on its own, so a long line costs
-  // time linear in its length.
+  // Reports each stderr line, holding at most the CHILD_LOG_LIMIT code points of
+  // the line in progress that a log line can carry (ADR-0002). A longer line is
+  // reported once it reaches that length, and the rest of it is dropped. Each
+  // chunk is split on its own, so a long line costs time linear in its length.
   async #readStderr(stderr: ReadableStream<Uint8Array>) {
     let pending = '';
     let pendingCount = 0;
@@ -125,10 +124,10 @@ export class Child {
       const parts = text.split('\n');
       for (const [index, part] of parts.entries()) {
         if (!dropping && part !== '') {
-          const { count, head } = leadingCodePoints(part, STDERR_LINE_LIMIT - pendingCount);
+          const { count, head } = leadingCodePoints(part, CHILD_LOG_LIMIT - pendingCount);
           pending += head;
           pendingCount += count;
-          if (pendingCount === STDERR_LINE_LIMIT) {
+          if (pendingCount === CHILD_LOG_LIMIT) {
             this.#options.onStderr(pending);
             pending = '';
             pendingCount = 0;
