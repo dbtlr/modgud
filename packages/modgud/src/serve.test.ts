@@ -491,10 +491,7 @@ test(
       expect(stalled.state.bytes).toBeLessThan(64 * 1024 * 1024);
 
       // The reading Caller has outlived the idle timeout and keeps its stream.
-      await waitFor(
-        () => performance.now() - started > (TEST_IDLE_SECONDS + 4) * 1000,
-        (TEST_IDLE_SECONDS + 4) * 1000,
-      );
+      await Bun.sleep(Math.max(0, (TEST_IDLE_SECONDS + 4) * 1000 - (performance.now() - started)));
       expect(reading.state.ended).toBe(false);
       expect(cancelled.reading).toBe(0);
       const before = reading.state.bytes;
