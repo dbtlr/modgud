@@ -13,6 +13,7 @@ import type { Log } from '../log.ts';
 import { s256Challenge } from '../pkce.ts';
 import { createPublicListener } from '../public-listener.ts';
 import type { PublicListener } from '../public-listener.ts';
+import { CONNECTION_IDLE_SECONDS, listen } from '../serve.ts';
 import { openStore } from '../store.ts';
 import type { Store } from '../store.ts';
 
@@ -148,12 +149,18 @@ export const createHarness = () => {
       ...(childLimits === undefined ? {} : { childLimits }),
       ...(storeCleanupMs === undefined ? {} : { storeCleanupMs }),
     });
-    const server = Bun.serve({
-      fetch: listener.fetch,
-      hostname: '127.0.0.1',
-      idleTimeout: 60,
-      port: 0,
-    });
+    const server = listen(
+      {
+        fetch: listener.fetch,
+        host: '127.0.0.1',
+        idleTimeout: CONNECTION_IDLE_SECONDS,
+        log,
+        port: 0,
+      },
+      (message) => {
+        throw new Error(message);
+      },
+    );
     const instance: Running = {
       lines,
       listener,

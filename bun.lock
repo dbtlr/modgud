@@ -12,6 +12,9 @@
     "packages/modgud": {
       "name": "modgud",
       "version": "0.1.0",
+      "bin": {
+        "modgud": "src/main.ts",
+      },
       "dependencies": {
         "@loomcli/core": "0.18.0",
         "@loomcli/plugins": "0.18.0",
