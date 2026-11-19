@@ -21,7 +21,7 @@ An entry in a Grant's allow or deny list that matches tools by name, by standard
 _Avoid_: Rule, filter (a filter is the result of all Selectors)
 
 **Group**:
-A label a Service declares in its own tool definitions, such as `admin`, so Grants can select those tools together.
+A label a Service declares in its own tool definitions, such as `admin`, so Grants can select those tools together. A tool lists its Groups in its `_meta` under `"modgud/groups"`; [ADR-0001](decisions/0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md) fixes the schema.
 _Avoid_: Category, tag
 
 **Identity**:
