@@ -90,7 +90,7 @@ A connection that ends with output still unsent leaves that output in the operat
 A Session's first request after its Child idled out pays the Child's startup, about 400 ms for Mimir.
 A Service must be willing to take its Identity from its environment. Mimir needs to accept an asserted user from the environment and run without a clone binding.
 A tool call that runs longer than its Service's idle timeout without any message in either direction is cut off when the Child stops.
-Groups and hints are trusted because the Service declares them. A Service's `group_key` ([ADR-0001](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md)) lets Modgud read the Groups a third-party tool declares in its own `_meta`, and configuring it is the admin's choice to trust them. Assigning Groups in proxy configuration to a tool that declares none is out of scope for v1.
+Groups and hints are trusted because the Service declares them: configuring a Service means trusting the Groups it declares under its Group key, the default or a configured `group_key` ([ADR-0001](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md)). The configurable key lets Modgud read the Groups a third-party tool already declares in its own `_meta`. Assigning Groups in proxy configuration to a tool that declares none is out of scope for v1.
 HTTP upstream Services, with the Identity in `_meta`, are a future extension and not part of this decision.
 
 ## Changelog
