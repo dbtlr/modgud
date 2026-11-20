@@ -218,6 +218,12 @@ describe('readServiceBearer file failures', () => {
   test.skipIf(process.platform !== 'linux')(
     'fails with unreadable for a file that reports a small size but holds more than 64 KiB',
     async () => {
+      // The file must open as a regular file that reports a size of 0, or the
+      // reader refuses it before the read and the check after it goes untested.
+      const handle = await open('/proc/kallsyms');
+      const stats = await handle.stat();
+      await handle.close();
+      expect(stats.isFile() && stats.size === 0).toBe(true);
       expect(await readServiceBearer({ bearer_file: '/proc/kallsyms' }, home)).toEqual({
         failure: 'unreadable',
         kind: 'failed',
