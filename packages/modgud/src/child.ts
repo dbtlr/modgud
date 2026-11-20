@@ -3,8 +3,42 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/server';
 
 import { CHILD_LOG_LIMIT } from './log.ts';
 
-// How long a Child gets to exit after SIGTERM before it is killed.
+// How long a Child's process group gets to exit after SIGTERM before it is
+// killed.
 const STOP_GRACE_MS = 2000;
+
+// How long stop() waits for a Child's process group to be gone after SIGKILL.
+// A killed process lingers until its parent reaps it, or longer while it is in
+// uninterruptible sleep; the bound keeps one such process from holding up
+// shutdown.
+const KILL_WAIT_MS = 1000;
+
+// How often stop() checks whether a Child's process group has exited.
+const STOP_POLL_MS = 50;
+
+// Sends a signal to every process in a process group. Returns whether the
+// group still had a process to receive it: only ESRCH means it had none.
+const signalGroup = (groupId: number, signal: NodeJS.Signals | 0) => {
+  try {
+    process.kill(-groupId, signal);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && 'code' in error && error.code === 'ESRCH');
+  }
+};
+
+// Waits up to `ms` for a process group to have no process left. Resolves to
+// whether it still has one.
+const waitForEmptyGroup = async (groupId: number, ms: number) => {
+  const deadline = performance.now() + ms;
+  let running = signalGroup(groupId, 0);
+  while (running && performance.now() < deadline) {
+    // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
+    await Bun.sleep(STOP_POLL_MS);
+    running = signalGroup(groupId, 0);
+  }
+  return running;
+};
 
 // The first `limit` code points of `text`, and how many that is. It reads no
 // further than it needs.
@@ -48,9 +82,15 @@ const asError = (error: unknown) => (error instanceof Error ? error : new Error(
 // A Service process that speaks MCP over stdio. Unlike the SDK's stdio client
 // transport, which always adds variables from Modgud's own environment, it
 // starts the process with exactly the environment it is given (ADR-0002).
+// The process leads a new session and process group, so stopping the Child
+// also stops what a wrapper such as `sh -c` started, even after the wrapper
+// itself has exited.
 export class Child {
   readonly #options: ChildOptions;
   #process: Bun.Subprocess<'pipe', 'pipe', 'pipe'> | undefined;
+  // The one stop of the process group, once begun. A later stop() waits for it
+  // instead of signalling a group id the system may have reused.
+  #stopped: Promise<void> | undefined;
 
   constructor(options: ChildOptions) {
     this.#options = options;
@@ -62,6 +102,8 @@ export class Child {
     const { args, command, cwd, environment } = this.#options;
     const process = Bun.spawn([command, ...args], {
       ...(cwd === undefined ? {} : { cwd }),
+      // setsid(): the process leads its own process group, which stop() signals.
+      detached: true,
       env: environment,
       stderr: 'pipe',
       stdin: 'pipe',
@@ -160,15 +202,26 @@ export class Child {
     await stdin.flush();
   }
 
-  // Stops the process: SIGTERM, then SIGKILL if it has not exited in time.
-  async stop() {
+  // Stops the process group: SIGTERM, then SIGKILL to whatever is left of it
+  // once the grace period ends. It stops a group whose leader has already
+  // exited too, as when a wrapper left a process running. It resolves once the
+  // leader has exited and the group is empty, or KILL_WAIT_MS after SIGKILL
+  // with whatever the kernel has not yet removed.
+  stop() {
     const process = this.#process;
-    if (process === undefined || process.exitCode !== null || process.signalCode !== null) {
-      return;
+    if (process === undefined) {
+      return Promise.resolve();
     }
-    process.kill('SIGTERM');
-    const timer = setTimeout(() => process.kill('SIGKILL'), STOP_GRACE_MS);
+    this.#stopped ??= Child.#stopGroup(process);
+    return this.#stopped;
+  }
+
+  static async #stopGroup(process: Bun.Subprocess) {
+    const groupId = process.pid;
+    if (signalGroup(groupId, 'SIGTERM') && (await waitForEmptyGroup(groupId, STOP_GRACE_MS))) {
+      signalGroup(groupId, 'SIGKILL');
+      await waitForEmptyGroup(groupId, KILL_WAIT_MS);
+    }
     await process.exited;
-    clearTimeout(timer);
   }
 }
