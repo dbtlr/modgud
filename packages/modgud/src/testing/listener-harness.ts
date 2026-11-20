@@ -48,6 +48,8 @@ export type StartOptions = {
   // An argument the stub gets, so a test can find its processes.
   marker?: string;
   maxSessionsPerGrant?: number;
+  // Both Services' max_tool_calls_per_minute, when set.
+  maxToolCallsPerMinute?: number;
   origins?: string[];
   parentEnvironment?: Record<string, string | undefined>;
   sessionIdleMinutes?: number;
@@ -108,6 +110,7 @@ export const createHarness = () => {
     idleMinutes = 30,
     marker = '',
     maxSessionsPerGrant = 64,
+    maxToolCallsPerMinute,
     origins = [],
     parentEnvironment = process.env,
     sessionIdleMinutes = 1440,
@@ -115,6 +118,10 @@ export const createHarness = () => {
     stubEnv = {},
     wrapStore = (store: Store) => store,
   }: StartOptions = {}): Promise<Running> => {
+    const toolLimit =
+      maxToolCallsPerMinute === undefined
+        ? ''
+        : `max_tool_calls_per_minute = ${String(maxToolCallsPerMinute)}`;
     const stub =
       httpServiceUrl === undefined
         ? `
@@ -122,11 +129,13 @@ export const createHarness = () => {
       args = ${JSON.stringify([STUB, ...(marker === '' ? [] : [marker])])}
       env = ${tomlTable({ STUB_MODE: '', STUB_SETTING: 'configured', ...stubEnv })}
       idle_timeout_minutes = ${String(idleMinutes)}
+      ${toolLimit}
     `
         : `
       url = ${JSON.stringify(httpServiceUrl)}
       bearer_file = ${JSON.stringify(httpServiceBearerFile)}
       idle_timeout_minutes = ${String(idleMinutes)}
+      ${toolLimit}
     `;
     const config = parseConfig(`
       [harness]

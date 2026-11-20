@@ -83,6 +83,7 @@ describe('parseConfig', () => {
       env: {},
       idle_timeout_minutes: 30,
       kind: 'process',
+      max_tool_calls_per_minute: 120,
     });
   });
 
@@ -146,6 +147,27 @@ describe('parseConfig', () => {
     expect(() =>
       parseConfig(configWith({ 'services.norn.idle_timeout_minutes': '10081' })),
     ).toThrow(/idle_timeout_minutes/u);
+  });
+
+  test('accepts a tool call limit from 1 to 6000 per minute, for either kind of Service', () => {
+    for (const limit of [1, 6000]) {
+      expect(
+        parseConfig(configWith({ 'services.norn.max_tool_calls_per_minute': String(limit) }))
+          .services.norn?.max_tool_calls_per_minute,
+      ).toBe(limit);
+      expect(
+        parseConfig(httpServiceWith({ max_tool_calls_per_minute: String(limit) })).services.norn
+          ?.max_tool_calls_per_minute,
+      ).toBe(limit);
+    }
+  });
+
+  test('refuses a tool call limit outside 1 to 6000 whole calls, naming the setting', () => {
+    for (const limit of ['0', '6001', '1.5', '-1']) {
+      expect(() =>
+        parseConfig(configWith({ 'services.norn.max_tool_calls_per_minute': limit })),
+      ).toThrow(/services\.norn\.max_tool_calls_per_minute/u);
+    }
   });
 
   test('refuses a Session idle timeout longer than one week, naming the setting', () => {
@@ -303,6 +325,7 @@ describe('an HTTP Service', () => {
       bearer_file: '~/.config/norn/tokens.toml',
       idle_timeout_minutes: 30,
       kind: 'http',
+      max_tool_calls_per_minute: 120,
       tool_list_max_age_seconds: 60,
       url: NORN_URL,
     });

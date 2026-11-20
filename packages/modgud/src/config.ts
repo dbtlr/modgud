@@ -73,6 +73,7 @@ export type ProcessServiceConfig = {
   // Grant sets it, so a value in `env` or the base never reaches the Child.
   identity_env?: string;
   idle_timeout_minutes: number;
+  max_tool_calls_per_minute: number;
 };
 
 // A Service Modgud reaches over Streamable HTTP through a Link (ADR-0005).
@@ -82,6 +83,7 @@ export type HttpServiceConfig = {
   bearer_file: string;
   bearer_key?: string;
   idle_timeout_minutes: number;
+  max_tool_calls_per_minute: number;
   tool_list_max_age_seconds: number;
   url: string;
 };
@@ -101,6 +103,9 @@ const service = z
     identity_env: variableName.optional(),
     // At most one week, which keeps the timer within setTimeout's range.
     idle_timeout_minutes: z.number().positive().max(10_080).default(30),
+    // The tools/call requests each Grant may send in any 60 seconds
+    // (ADR-0006). There is no setting that turns the limit off.
+    max_tool_calls_per_minute: z.int().min(1).max(6000).default(120),
     tool_list_max_age_seconds: z.int().min(1).max(3600).optional(),
     url: serviceUrl.optional(),
   })
@@ -142,14 +147,23 @@ const service = z
   // The refinement above has passed, so a Service with a url has a
   // bearer_file, and one without a url has a command.
   .transform((settings): ServiceConfig => {
-    const { bearer_file, bearer_key, command, cwd, identity_env, idle_timeout_minutes, url } =
-      settings;
+    const {
+      bearer_file,
+      bearer_key,
+      command,
+      cwd,
+      identity_env,
+      idle_timeout_minutes,
+      max_tool_calls_per_minute,
+      url,
+    } = settings;
     if (url !== undefined && bearer_file !== undefined) {
       return {
         bearer_file,
         ...(bearer_key === undefined ? {} : { bearer_key }),
         idle_timeout_minutes,
         kind: 'http',
+        max_tool_calls_per_minute,
         tool_list_max_age_seconds: settings.tool_list_max_age_seconds ?? 60,
         url,
       };
@@ -162,6 +176,7 @@ const service = z
       ...(identity_env === undefined ? {} : { identity_env }),
       idle_timeout_minutes,
       kind: 'process',
+      max_tool_calls_per_minute,
     };
   });
 
