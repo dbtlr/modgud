@@ -53,8 +53,9 @@ export type Upstream = {
   // stopped Child's work stops with it; a stopped Link's may still finish on
   // the Service.
   readonly workOutlivesStop: boolean;
-  // Settles once the run has fully stopped, however it stopped: a Child's
-  // process group has stopped, or a Link's last request to the Service has
+  // Settles once the run has fully stopped, however it stopped: a Child has
+  // exited and its process group is empty, or has been sent SIGKILL and given
+  // a bounded wait (Child.stop()); or a Link's last request to the Service has
   // settled.
   readonly stopped: Promise<void>;
   // Starts the run and completes Modgud's own `initialize` handshake within

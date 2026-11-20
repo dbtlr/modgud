@@ -53,7 +53,7 @@ class ChildUpstream implements Upstream {
   readonly #options: ChildUpstreamOptions;
   readonly #events: UpstreamEvents;
   readonly #process: Child;
-  // Settles once the Child's process group has stopped, or it never started.
+  // Settles once Child.stop() has resolved, or the Child never started.
   readonly #stoppedGroup = Promise.withResolvers<void>();
   readonly #started = Promise.withResolvers<StartResult>();
   readonly #initializeId: number;
@@ -137,7 +137,7 @@ class ChildUpstream implements Upstream {
   }
 
   // Stops the Child's process group for GrantRelay's reason: SIGTERM, then
-  // SIGKILL. `stopped` settles once the group has stopped.
+  // SIGKILL. `stopped` settles once Child.stop() has resolved.
   stop(reason: StopReason) {
     this.#halt(reason);
   }
