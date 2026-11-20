@@ -59,6 +59,19 @@ describe('a sliding-window limit over a long run', () => {
     }
   });
 
+  test('drops a time recorded after the clock stepped back once it leaves the window', () => {
+    const { clock, window } = limitAt(2);
+
+    clock.now = 1000;
+    window.record('a');
+    // A wall clock corrected backwards.
+    clock.now = 500;
+    window.record('a');
+    clock.now = 1600;
+
+    expect(window.wait('a')).toBe(0);
+  });
+
   test('checks a full window of the highest limit without copying it each time', () => {
     const limit = 6000;
     const clock = { now: 0 };

@@ -5,7 +5,7 @@ import { ipv6Groups } from './ip-address.ts';
 // A sliding-window count of events per key: at most `limit` in any
 // `windowMs`. Each key's times are kept oldest first and dropped from the
 // front as they leave the window, so a check costs the same at any limit, and
-// memory stays bounded by the events recorded within about one window.
+// memory stays bounded by the events recorded within about two windows.
 export const createWindowLimit = ({
   limit,
   now,
@@ -45,11 +45,19 @@ export const createWindowLimit = ({
   return {
     record: (key: string) => {
       const entry = recent(key);
+      const time = now();
       if (entry === undefined) {
-        events.set(key, { start: 0, times: [now()] });
-      } else {
-        entry.times.push(now());
+        events.set(key, { start: 0, times: [time] });
+        return;
       }
+      // A wall clock that stepped back records out of order: insert the time
+      // in its place, so it still leaves from the front. Usually it is last.
+      const { times } = entry;
+      let at = times.length;
+      while (at > entry.start && (times[at - 1] ?? 0) > time) {
+        at -= 1;
+      }
+      times.splice(at, 0, time);
     },
     // Milliseconds until one more event under the key stays within the limit;
     // 0 when it does now.
