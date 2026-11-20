@@ -2,6 +2,60 @@ const LF = 10;
 const CR = 13;
 const BOM = String.fromCodePoint(65279);
 
+// An event's data lines, joined by LF. A single line stays the string it
+// already is; from the second line on, the lines go into one growable byte
+// buffer that is decoded once when the event ends. Many short lines then cost
+// their bytes, not one string or array entry per line, which the engine would
+// keep as separate allocations.
+class EventDataBuffer {
+  readonly #encoder = new TextEncoder();
+  #first: string | undefined;
+  #bytes: Uint8Array | undefined;
+  #length = 0;
+
+  get empty() {
+    return this.#first === undefined && this.#bytes === undefined;
+  }
+
+  append(value: string) {
+    if (this.empty) {
+      this.#first = value;
+      return;
+    }
+    if (this.#first !== undefined) {
+      const first = this.#first;
+      this.#first = undefined;
+      this.#write(first);
+    }
+    this.#write(value, true);
+  }
+
+  // The joined data, after which the buffer is empty again.
+  take(): string {
+    const text = this.#first ?? new TextDecoder().decode(this.#bytes?.subarray(0, this.#length));
+    this.#first = undefined;
+    this.#bytes = undefined;
+    this.#length = 0;
+    return text;
+  }
+
+  #write(value: string, afterLF = false) {
+    const needed = this.#length + Buffer.byteLength(value) + (afterLF ? 1 : 0);
+    let bytes = this.#bytes ?? new Uint8Array(Math.max(needed, 1024));
+    if (needed > bytes.length) {
+      const grown = new Uint8Array(Math.max(needed, bytes.length * 2));
+      grown.set(bytes.subarray(0, this.#length));
+      bytes = grown;
+    }
+    this.#bytes = bytes;
+    if (afterLF) {
+      bytes[this.#length] = LF;
+      this.#length += 1;
+    }
+    this.#length += this.#encoder.encodeInto(value, bytes.subarray(this.#length)).written;
+  }
+}
+
 // Split lines at their ASCII terminators before decoding, so a partial line
 // counts toward the event's byte budget as soon as its bytes arrive.
 export async function* eventData(body: ReadableStream<Uint8Array>, maxBytes: number) {
@@ -10,9 +64,7 @@ export async function* eventData(body: ReadableStream<Uint8Array>, maxBytes: num
   let skipLF = false;
   let bytes = 0;
   let line = '';
-  // The event's data lines so far, joined by LF as they arrive, so a stream
-  // of many short lines holds one string rather than one entry per line.
-  let data: string | undefined;
+  const data = new EventDataBuffer();
 
   for await (const chunk of body) {
     let offset = 0;
@@ -48,9 +100,8 @@ export async function* eventData(body: ReadableStream<Uint8Array>, maxBytes: num
       }
       firstLine = false;
       if (line.length === 0) {
-        const event = data ?? '';
+        const event = data.empty ? '' : data.take();
         bytes = 0;
-        data = undefined;
         if (event.length !== 0) {
           yield event;
         }
@@ -60,8 +111,7 @@ export async function* eventData(body: ReadableStream<Uint8Array>, maxBytes: num
           throw new Error('SSE event exceeds the limit');
         }
         if (line === 'data' || line.startsWith('data:')) {
-          const value = line.slice(line.startsWith('data: ') ? 6 : 5);
-          data = data === undefined ? value : `${data}\n${value}`;
+          data.append(line.slice(line.startsWith('data: ') ? 6 : 5));
         }
       }
       line = '';

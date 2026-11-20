@@ -30,3 +30,7 @@ test('holds many short data lines as one event within the byte bound', async () 
 
   expect(event).toBe('\n'.repeat(lines - 1));
 });
+
+test('keeps multi-byte text intact across joined data lines', async () => {
+  expect(await events('data: é\ndata:\ndata: 😀 ok\n\ndata: ü\n\n')).toEqual(['é\n\n😀 ok', 'ü']);
+});
