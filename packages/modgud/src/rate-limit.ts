@@ -3,7 +3,9 @@ import { isIPv6 } from 'node:net';
 import { ipv6Groups } from './ip-address.ts';
 
 // A sliding-window count of events per key: at most `limit` in any
-// `windowMs`. Memory stays bounded by the events recorded within one window.
+// `windowMs`. Each key's times are kept oldest first and dropped from the
+// front as they leave the window, so a check costs the same at any limit, and
+// memory stays bounded by the events recorded within about one window.
 export const createWindowLimit = ({
   limit,
   now,
@@ -13,30 +15,51 @@ export const createWindowLimit = ({
   now: () => number;
   windowMs: number;
 }) => {
-  // Each key's event times within the window, oldest first.
-  const events = new Map<string, number[]>();
+  // Each key's event times, oldest first. Those before `start` have left the
+  // window and wait to be compacted away.
+  const events = new Map<string, { start: number; times: number[] }>();
 
+  // The key's times with those that left the window dropped, or undefined
+  // when none is left.
   const recent = (key: string) => {
-    const since = now() - windowMs;
-    const times = (events.get(key) ?? []).filter((time) => time > since);
-    if (times.length === 0) {
-      events.delete(key);
-    } else {
-      events.set(key, times);
+    const entry = events.get(key);
+    if (entry === undefined) {
+      return undefined;
     }
-    return times;
+    const since = now() - windowMs;
+    while (entry.start < entry.times.length && (entry.times[entry.start] ?? 0) <= since) {
+      entry.start += 1;
+    }
+    if (entry.start === entry.times.length) {
+      events.delete(key);
+      return undefined;
+    }
+    // Compacting once half the array has left keeps each drop amortized O(1).
+    if (entry.start * 2 >= entry.times.length) {
+      entry.times = entry.times.slice(entry.start);
+      entry.start = 0;
+    }
+    return entry;
   };
 
   return {
     record: (key: string) => {
-      events.set(key, [...recent(key), now()]);
+      const entry = recent(key);
+      if (entry === undefined) {
+        events.set(key, { start: 0, times: [now()] });
+      } else {
+        entry.times.push(now());
+      }
     },
     // Milliseconds until one more event under the key stays within the limit;
     // 0 when it does now.
     wait: (key: string) => {
-      const times = recent(key);
-      const oldestCounted = times[times.length - limit];
-      return oldestCounted === undefined ? 0 : oldestCounted + windowMs - now();
+      const entry = recent(key);
+      if (entry === undefined || entry.times.length - entry.start < limit) {
+        return 0;
+      }
+      const oldestCounted = entry.times[entry.times.length - limit] ?? 0;
+      return oldestCounted + windowMs - now();
     },
   };
 };

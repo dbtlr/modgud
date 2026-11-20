@@ -356,6 +356,8 @@ describe('the refusal', () => {
     expect(await waitAt(1)).toBe(60);
     expect(await waitAt(58 * SECOND)).toBe(2);
     expect(await waitAt(58 * SECOND + 1)).toBe(2);
+    // 1.4 seconds: rounding to the nearest second would say 1.
+    expect(await waitAt(58.6 * SECOND)).toBe(2);
     expect(await waitAt(59 * SECOND)).toBe(1);
     expect(await waitAt(60 * SECOND - 1)).toBe(1);
   });
@@ -386,6 +388,22 @@ describe('episode logging', () => {
       'stub child for static-token ended a tool call limit episode: it refused 2 tool calls.',
     ]);
     expect(warnings).toHaveLength(1);
+  });
+
+  test('a call sent exactly 60 seconds after the last refusal ends the episode, and one sent sooner does not', async () => {
+    const sentAfter = async (quietMs: number) => {
+      const { call, info } = fixture({ limit: 1 });
+      await call(0);
+      await call(10 * SECOND);
+      // The call at 0 has left the window, so this one is sent.
+      await call(10 * SECOND + quietMs);
+      return info;
+    };
+
+    expect(await sentAfter(60 * SECOND - 1)).toEqual([]);
+    expect(await sentAfter(60 * SECOND)).toEqual([
+      'stub child for static-token ended a tool call limit episode: it refused 1 tool call.',
+    ]);
   });
 
   test('a Caller that calls without pause at the limit costs two lines per episode, at least 60 seconds apart', async () => {
