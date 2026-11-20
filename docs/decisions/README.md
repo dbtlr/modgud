@@ -18,3 +18,4 @@ Architecture decision records (ADRs). Each decision's frontmatter `status` says 
 - [ADR-0003 — Two listeners split the public surface from everything a person clicks](0003-two-listeners-anything-a-person-clicks-lives-on-the-tailnet.md) (accepted)
 - [ADR-0004 — The Admin listener may bind loopback behind a tailnet forward](0004-the-admin-listener-may-bind-loopback-behind-a-tailnet-forward.md) (accepted)
 - [ADR-0005 — An HTTP Service is reached through one Link per Grant, behind the same Sessions as a Child](0005-an-http-service-is-reached-through-one-link-per-grant.md) (proposed)
+- [ADR-0006 — Each Grant sends a bounded number of tool calls per minute, and a refused call gets a tool error the model can read](0006-each-grant-sends-a-bounded-number-of-tool-calls-per-minute.md) (proposed)
