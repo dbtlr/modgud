@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import type { GrantLimits } from './grant-relay.ts';
 import type { PublicListener } from './public-listener.ts';
 import {
   connect,
@@ -20,7 +21,14 @@ import {
   TOKEN,
   waitFor,
 } from './testing/listener-harness.ts';
-import { httpMethod, startStubHttpService } from './testing/stub-http-service.ts';
+import {
+  httpEvent,
+  httpId,
+  httpMethod,
+  httpStream,
+  rpcResult,
+  startStubHttpService,
+} from './testing/stub-http-service.ts';
 import type { StubHttpRequest } from './testing/stub-http-service.ts';
 
 const harness = createHarness();
@@ -387,8 +395,15 @@ describe('an HTTP Service, through its Link', () => {
 
   // Starts a stub HTTP Service and a listener serving it, with the bearer in
   // a file under the harness's directory.
-  const startLinked = async (options: { bearer?: string; idleMinutes?: number } = {}) => {
-    const stub = startStubHttpService({ sessionId: SERVICE_SESSION });
+  const startLinked = async (
+    options: {
+      bearer?: string;
+      childLimits?: Partial<GrantLimits>;
+      idleMinutes?: number;
+      stub?: Parameters<typeof startStubHttpService>[0];
+    } = {},
+  ) => {
+    const stub = startStubHttpService({ sessionId: SERVICE_SESSION, ...options.stub });
     const bearerFile = join(harness.directory, 'service-token');
     if (options.bearer !== undefined) {
       await writeFile(bearerFile, options.bearer);
@@ -396,6 +411,7 @@ describe('an HTTP Service, through its Link', () => {
     const instance = await start({
       httpServiceBearerFile: bearerFile,
       httpServiceUrl: stub.url,
+      ...(options.childLimits === undefined ? {} : { childLimits: options.childLimits }),
       ...(options.idleMinutes === undefined ? {} : { idleMinutes: options.idleMinutes }),
     });
     return { ...instance, bearerFile, stub };
@@ -411,6 +427,66 @@ describe('an HTTP Service, through its Link', () => {
       expect(firstText(await client.callTool({ arguments: { text: 'hello' }, name: 'echo' }))).toBe(
         'hello',
       );
+    } finally {
+      await stub.server.stop(true);
+    }
+  });
+
+  test('a Service that pings and logs before it answers initialize still starts, and its ping is answered', async () => {
+    const { lines, stub, url } = await startLinked({
+      bearer: LINK_SECRET,
+      stub: {
+        respond: (request) =>
+          httpMethod(request) === 'initialize'
+            ? httpStream([
+                httpEvent({ id: 'service-ping', jsonrpc: '2.0', method: 'ping' }),
+                httpEvent({
+                  jsonrpc: '2.0',
+                  method: 'notifications/message',
+                  params: { data: 'warming up', level: 'info' },
+                }),
+                httpEvent(
+                  rpcResult(httpId(request), {
+                    capabilities: { tools: {} },
+                    protocolVersion: '2025-11-25',
+                    serverInfo: { name: 'stub-http-service', version: '1' },
+                  }),
+                ),
+              ])
+            : undefined,
+      },
+    });
+    try {
+      await connect(url);
+
+      await waitFor(() =>
+        stub.requests.some(
+          (request) =>
+            JSON.stringify(request.message) === JSON.stringify(rpcResult('service-ping')),
+        ),
+      );
+      expect(lines.some((line) => line.includes('notifications/message'))).toBe(true);
+    } finally {
+      await stub.server.stop(true);
+    }
+  });
+
+  test("a Link's start deadline is the Grant's startTimeoutMs", async () => {
+    const { lines, stub, url } = await startLinked({
+      bearer: LINK_SECRET,
+      childLimits: { startTimeoutMs: 200 },
+      stub: {
+        respond: (request) =>
+          httpMethod(request) === 'initialize' ? httpStream([], { hang: true }) : undefined,
+      },
+    });
+    try {
+      const started = performance.now();
+      const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
+
+      expect(response.status).toBe(502);
+      expect(performance.now() - started).toBeLessThan(2500);
+      expect(lines.some((line) => line.includes('start deadline exceeded'))).toBe(true);
     } finally {
       await stub.server.stop(true);
     }

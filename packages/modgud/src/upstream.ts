@@ -27,9 +27,10 @@ export type StopReason = 'authorization ended' | 'idle' | 'shutdown';
 // What an Upstream reports to GrantRelay. None of them fire after GrantRelay
 // has called `stop`.
 export type UpstreamEvents = {
-  // A message the Service sent outside Modgud's own start requests: a
-  // response or progress for a forwarded request, a request, or a
-  // notification. Its ids are the Upstream-side ids GrantRelay assigned.
+  // A message the Service sent, other than the answers to Modgud's own start
+  // requests: a response or progress for a forwarded request, a request, or a
+  // notification. It may arrive before `start` resolves. Its ids are the
+  // Upstream-side ids GrantRelay assigned.
   onMessage: (message: JSONRPCMessage) => void;
   // One forwarded request failed without stopping the Upstream, such as a
   // write that failed or a bad HTTP answer. GrantRelay answers its Caller

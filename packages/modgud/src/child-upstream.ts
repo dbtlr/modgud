@@ -12,13 +12,12 @@ import type {
   RequestId,
 } from '@modelcontextprotocol/server';
 
-import packageMetadata from '../package.json';
 import { Child } from './child.ts';
 import type { ExitStatus } from './child.ts';
 import type { ProcessServiceConfig } from './config.ts';
 import { CHILD_LOG_LIMIT, excerpt, loggable } from './log.ts';
 import type { Log } from './log.ts';
-import { CHILD_PROTOCOL_VERSION, parseChildInitializeResult } from './protocol.ts';
+import { initializeRequest, parseChildInitializeResult } from './protocol.ts';
 import type {
   StartResult,
   StopReason,
@@ -26,8 +25,6 @@ import type {
   UpstreamEvents,
   UpstreamFactory,
 } from './upstream.ts';
-
-const MODGUD_INFO = { name: 'modgud', version: packageMetadata.version };
 
 const describeExit = ({ code, signal }: ExitStatus) =>
   signal === null ? `exited with status ${String(code)}` : `exited on ${signal}`;
@@ -121,16 +118,7 @@ class ChildUpstream implements Upstream {
       () => this.#failStart('initialize timed out'),
       this.#options.startTimeoutMs,
     );
-    void this.#write({
-      id: this.#initializeId,
-      jsonrpc: '2.0',
-      method: 'initialize',
-      params: {
-        capabilities: {},
-        clientInfo: MODGUD_INFO,
-        protocolVersion: CHILD_PROTOCOL_VERSION,
-      },
-    });
+    void this.#write(initializeRequest(this.#initializeId));
     return this.#started.promise;
   }
 

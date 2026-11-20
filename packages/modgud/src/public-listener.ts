@@ -159,7 +159,15 @@ export const createPublicListener = ({
   const upstreamFor = (service: ServiceConfig, grant: Grant, label: string) =>
     service.kind === 'http'
       ? (events: UpstreamEvents, nextId: () => number) =>
-          createLink({ events, home, label, log, nextId, service })
+          createLink({
+            events,
+            home,
+            label,
+            log,
+            nextId,
+            service,
+            startTimeoutMs: limits.startTimeoutMs,
+          })
       : createChildUpstream({
           command: service,
           environment: () =>

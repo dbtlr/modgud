@@ -38,7 +38,8 @@ import type { StopReason, Upstream, UpstreamFactory } from './upstream.ts';
 // shorten them.
 export type GrantLimits = {
   // How long a run has to complete Modgud's `initialize`. An Upstream
-  // enforces it; GrantRelay only carries it to whoever builds the Upstream.
+  // enforces it; whoever builds the Upstream (public-listener) passes it on,
+  // and GrantRelay never reads it.
   startTimeoutMs: number;
   // The wait after one failed start, doubling up to `backoffMaxMs`.
   backoffBaseMs: number;
@@ -289,6 +290,8 @@ export class GrantRelay {
       if (this.#run !== undefined) {
         this.#stop(this.#run, kind === 'shutdown' ? 'shutdown' : 'authorization ended');
       }
+      // No run starts again, so nothing still counts against the limit.
+      this.#releaseHeld();
     }
     await Promise.all(this.#unsettled);
   }
@@ -439,6 +442,14 @@ export class GrantRelay {
       id,
       setTimeout(() => this.#held.delete(id), this.#limits.cancelledHoldMs),
     );
+  }
+
+  // Stops every hold, so none of their timers lingers.
+  #releaseHeld() {
+    for (const timer of this.#held.values()) {
+      clearTimeout(timer);
+    }
+    this.#held.clear();
   }
 
   // Cancels a forwarded request on the Service. Its id and token are released
@@ -593,10 +604,7 @@ export class GrantRelay {
       }
     }
     if (!outlives) {
-      for (const timer of this.#held.values()) {
-        clearTimeout(timer);
-      }
-      this.#held.clear();
+      this.#releaseHeld();
     }
     if (run.result === undefined && (failure || this.#ended !== undefined)) {
       this.#failWaiting(this.#ended ?? 'failed');

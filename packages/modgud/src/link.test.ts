@@ -31,6 +31,7 @@ afterEach(async () => {
 const fixture = async (
   stubOptions?: Parameters<typeof startStubHttpService>[0],
   limits?: LinkOptions['limits'],
+  startTimeoutMs = 30_000,
 ) => {
   const stub = startStubHttpService(stubOptions);
   cleanups.push(() => stub.server.stop(true));
@@ -63,6 +64,7 @@ const fixture = async (
       tool_list_max_age_seconds: 60,
       url: stub.url,
     },
+    startTimeoutMs,
   };
   const link: Upstream = createLink(options);
   cleanups.push(() => {
@@ -210,7 +212,8 @@ test('applies one deadline to the whole start handshake', async () => {
         return new Response(null, { status: 202 });
       },
     },
-    { startDeadlineMs: 115 },
+    undefined,
+    115,
   );
   expect(await link.start()).toEqual({ kind: 'failed', reason: 'start deadline exceeded' });
   await link.stopped;
@@ -379,7 +382,8 @@ test('bypasses proxy environment variables on every Link request', async () => {
       log: { warn() {}, info() {} },
       events: { onMessage() {}, onRequestFailed() {}, onStopped() {} },
       nextId: () => 1,
-      limits: { startDeadlineMs: 1000, auxiliaryTimeoutMs: 200 },
+      limits: { auxiliaryTimeoutMs: 200 },
+      startTimeoutMs: 1000,
     });
     if ((await link.start()).kind === 'failed') process.exitCode = 1;
     link.stop('idle');
@@ -389,9 +393,13 @@ test('bypasses proxy environment variables on every Link request', async () => {
     {
       env: {
         ...process.env,
+        ALL_PROXY: proxy.url.href,
+        HTTPS_PROXY: proxy.url.href,
         HTTP_PROXY: proxy.url.href,
         NO_PROXY: '',
+        all_proxy: proxy.url.href,
         http_proxy: proxy.url.href,
+        https_proxy: proxy.url.href,
         no_proxy: '',
       },
     },
@@ -626,7 +634,7 @@ test.each([401, 404])(
   },
 );
 
-test('shutdown sends cancellations and aborts requests and auxiliaries without waiting', async () => {
+test('shutdown aborts requests at once and waits for auxiliaries only to their deadline', async () => {
   const closed = new Set<string>();
   const { link, messages, failures, stops, requests } = await fixture(
     {
@@ -651,17 +659,47 @@ test('shutdown sends cancellations and aborts requests and auxiliaries without w
         return undefined;
       },
     },
-    { auxiliaryTimeoutMs: 1500 },
+    { auxiliaryTimeoutMs: 300 },
   );
   expect(await link.start()).toMatchObject({ kind: 'started' });
   link.request(toolRequest(7));
   link.answer(rpcResult('service-ping'));
   await eventually(() => messages.length === 1 && requests.length === 4);
+  const stopping = performance.now();
   link.stop('shutdown');
-  expect(await Promise.race([link.stopped, Bun.sleep(250).then(() => 'waiting')])).toBeUndefined();
-  await eventually(() => closed.size === 3);
+  await eventually(() => closed.has('request'));
+  expect(await Promise.race([link.stopped, Bun.sleep(100).then(() => 'waiting')])).toBe('waiting');
+  await link.stopped;
+  expect(performance.now() - stopping).toBeLessThan(1000);
+  expect(closed).toEqual(new Set(['request', 'cancellation', 'answer']));
   expect(requests.map(httpMethod)).toContain('notifications/cancelled');
   expect({ failures, messages, stops }).toEqual({ failures: [], messages: [progress], stops: [] });
+});
+
+test('shutdown delivers every cancellation and the DELETE within the auxiliary bound', async () => {
+  const count = 64;
+  const { link, requests } = await fixture({
+    respond: (request) =>
+      httpMethod(request) === 'tools/call' ? httpStream([], { hang: true }) : undefined,
+    sessionId: 'session',
+  });
+  expect(await link.start()).toMatchObject({ kind: 'started' });
+  for (let id = 100; id < 100 + count; id += 1) {
+    link.request(toolRequest(id));
+  }
+  await eventually(
+    () => requests.filter((entry) => httpMethod(entry) === 'tools/call').length === count,
+  );
+  const before = requests.length;
+  const started = performance.now();
+  link.stop('shutdown');
+  await link.stopped;
+  expect(performance.now() - started).toBeLessThan(1500);
+  const sent = requests.slice(before);
+  expect(sent.filter((entry) => httpMethod(entry) === 'notifications/cancelled')).toHaveLength(
+    count,
+  );
+  expect(sent.filter(({ method }) => method === 'DELETE')).toHaveLength(1);
 });
 
 test('bounds cancellations, answers and DELETE independently', async () => {

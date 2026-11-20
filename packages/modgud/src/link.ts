@@ -12,22 +12,20 @@ import type {
   RequestId,
 } from '@modelcontextprotocol/server';
 
-import packageMetadata from '../package.json';
 import { expandHome } from './config.ts';
 import type { HttpServiceConfig } from './config.ts';
 import type { Log } from './log.ts';
-import { CHILD_PROTOCOL_VERSION, parseChildInitializeResult } from './protocol.ts';
+import { initializeRequest, MODGUD_INFO, parseChildInitializeResult } from './protocol.ts';
 import { readServiceBearer } from './service-bearer.ts';
 import { eventData } from './sse.ts';
 import type { StartResult, StopReason, Upstream, UpstreamEvents } from './upstream.ts';
 
-// The bounds on one Link's requests, answers, and start.
+// The bounds on one Link's requests and answers.
 export const LINK_LIMITS = {
   answersInFlight: 64,
   auxiliaryTimeoutMs: 2000,
   cancellationsInFlight: 64,
   messageBytes: 10 * 1024 * 1024,
-  startDeadlineMs: 30_000,
 };
 
 export type LinkOptions = {
@@ -40,9 +38,10 @@ export type LinkOptions = {
   limits?: Partial<typeof LINK_LIMITS>;
   nextId: () => number;
   service: HttpServiceConfig;
+  // How long the Link has to complete Modgud's `initialize`, bearer read
+  // included: GrantLimits.startTimeoutMs.
+  startTimeoutMs: number;
 };
-
-const MODGUD_INFO = { name: 'modgud', version: packageMetadata.version };
 
 type Reply = JSONRPCErrorResponse | JSONRPCResultResponse;
 
@@ -135,7 +134,7 @@ class Link implements Upstream {
     this.#state = 'starting';
     const deadline = setTimeout(
       () => this.#finish({ kind: 'failed', reason: 'start deadline exceeded' }),
-      this.#limits.startDeadlineMs,
+      this.#options.startTimeoutMs,
     );
     try {
       return await Promise.race([this.#handshake(), this.#interrupted.promise]);
@@ -154,7 +153,7 @@ class Link implements Upstream {
   }
 
   answer(message: Reply): void {
-    if (this.#state === 'running') {
+    if (this.#state === 'running' || this.#state === 'starting') {
       this.#sendAuxiliary('answer', message);
     }
   }
@@ -216,25 +215,12 @@ class Link implements Upstream {
   // The start requests: `initialize`, then `notifications/initialized`.
   async #initialize(signal: AbortSignal) {
     const id = this.#options.nextId();
-    const response = await this.#post(
-      {
-        id,
-        jsonrpc: '2.0',
-        method: 'initialize',
-        params: {
-          capabilities: {},
-          clientInfo: MODGUD_INFO,
-          protocolVersion: CHILD_PROTOCOL_VERSION,
-        },
-      },
-      200,
-      signal,
-    );
+    const response = await this.#post(initializeRequest(id), 200, signal);
     const sessionId = response.headers.get('Mcp-Session-Id');
     if (sessionId !== null) {
       this.#headers.set('Mcp-Session-Id', sessionId);
     }
-    const reply = await this.#readReply(response, id, signal, () => undefined);
+    const reply = await this.#readReply(response, id, signal, this.#options.events.onMessage);
     const result = 'result' in reply ? parseChildInitializeResult(reply.result) : undefined;
     if (result === undefined) {
       throw new Error('Invalid initialize result');
@@ -321,7 +307,8 @@ class Link implements Upstream {
   }
 
   // Reads the answer to request `id` from a JSON or event-stream body,
-  // passing other messages on a stream to `onMessage`.
+  // passing other messages on a stream to `onMessage`, those on the
+  // `initialize` stream included.
   async #readReply(
     response: Response,
     id: RequestId,
@@ -414,7 +401,6 @@ class Link implements Upstream {
   // Ends the Link once: aborts its requests, sends the cancellations and the
   // DELETE that a local stop owes, and settles `stopped` when work has settled.
   #finish(end: LinkEnd) {
-    const shutdown = end.kind === 'local' && end.reason === 'shutdown';
     if (this.#state === 'stopped') {
       return;
     }
@@ -443,18 +429,10 @@ class Link implements Upstream {
     ) {
       this.#sendAuxiliary('delete');
     }
-    if (shutdown) {
-      // An abort in the same turn keeps Bun from dispatching the final
-      // cancellation and DELETE fetches. Abort on the next timer turn
-      // without waiting for any Service response.
-      setTimeout(() => {
-        this.#abortAuxiliary();
-        this.#settled.resolve();
-      }, 0);
-    } else {
-      // oxlint-disable-next-line promise/prefer-await-to-then -- settling never blocks stop or onStopped
-      void Promise.allSettled(this.#pending).then(() => this.#settled.resolve());
-    }
+    // Shutdown waits for them too: the 2 second deadline of each auxiliary
+    // request bounds how long.
+    // oxlint-disable-next-line promise/prefer-await-to-then -- settling never blocks stop or onStopped
+    void Promise.allSettled(this.#pending).then(() => this.#settled.resolve());
   }
 
   // Aborts the auxiliary requests still in flight.
