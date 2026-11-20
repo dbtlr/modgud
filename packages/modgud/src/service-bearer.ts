@@ -84,7 +84,9 @@ const readBearerFile = async (
   } catch {
     return { failure: 'unreadable' };
   } finally {
-    await file.close();
+    // The read has ended either way, so a failed close changes nothing it
+    // returns, and the reader never throws.
+    await file.close().catch(() => undefined);
   }
 };
 

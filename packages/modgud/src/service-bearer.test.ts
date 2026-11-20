@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { chmod, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -236,6 +236,32 @@ describe('readServiceBearer file failures', () => {
       failure: 'unreadable',
       kind: 'failed',
     });
+  });
+
+  test('keeps its answer when closing the file fails, instead of throwing', async () => {
+    const path = await fileWith('token', 'plain-secret');
+    const handle = await open(path);
+    const prototype: { close: (this: unknown) => Promise<void> } = Object.getPrototypeOf(handle);
+    await handle.close();
+    const { close: realClose } = prototype;
+    // Closes the descriptor, then reports a failure, as a close that hit EIO would.
+    const close = spyOn(prototype, 'close').mockImplementation(async function close(this: unknown) {
+      await realClose.call(this);
+      throw Object.assign(new Error('EIO: i/o error, close'), { code: 'EIO' });
+    });
+    try {
+      expect(await readServiceBearer({ bearer_file: path }, home)).toEqual({
+        kind: 'read',
+        secret: 'plain-secret',
+      });
+      expect(await readServiceBearer({ bearer_file: '/dev/null' }, home)).toEqual({
+        failure: 'unreadable',
+        kind: 'failed',
+      });
+      expect(close).toHaveBeenCalledTimes(2);
+    } finally {
+      close.mockRestore();
+    }
   });
 
   test.skipIf(process.getuid?.() === 0)(
