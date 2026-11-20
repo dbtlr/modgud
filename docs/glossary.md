@@ -5,8 +5,12 @@ Modgud is an MCP auth proxy that lets remote callers reach local MCP tools. Thes
 ## Language
 
 **Service**:
-A local MCP tool that Modgud serves at its own path, such as Norn at `/norn/mcp`.
+A local MCP tool that Modgud serves at its own path, such as Norn at `/norn/mcp`. Modgud runs a process Service as a Child, and reaches an HTTP Service at a loopback URL.
 _Avoid_: Backend, upstream, server (when meaning the tool)
+
+**HTTP Service**:
+A Service that serves MCP itself over Streamable HTTP at a loopback URL, behind a bearer token, so Modgud reaches it through a Link instead of running it. The other kind is a process Service. [ADR-0005](decisions/0005-an-http-service-is-reached-through-one-link-per-grant.md) settles it.
+_Avoid_: Upstream, remote Service
 
 **Caller**:
 The client that reaches a Service through Modgud, such as Claude chat, ChatGPT, or a fleet agent.
@@ -49,9 +53,13 @@ One approved chat-client connection: a client, the redirect URI it was approved 
 _Avoid_: Consent, login
 
 **Session**:
-One MCP session between a Caller and a Service under one Grant, from `initialize` until the Caller deletes it, it idles out, it is evicted, a new Child no longer matches what it was given, its Grant is revoked or expires, or Modgud shuts down. It outlives the Child that serves it.
+One MCP session between a Caller and a Service under one Grant, from `initialize` until the Caller deletes it, it idles out, it is evicted, a new Child or Link no longer matches what it was given, its Grant is revoked or expires, or Modgud shuts down. It outlives the Child or Link that serves it.
 _Avoid_: Connection, conversation
 
 **Child**:
 The Service process Modgud runs for one Grant, started on demand and shared by every Session of that Grant, with the Grant's Identity in its environment.
 _Avoid_: Worker, instance
+
+**Link**:
+What Modgud holds for one Grant's use of an HTTP Service, in the Child's place: the Service's initialize result and tool list, and the Grant's requests in flight. It is started on demand and stopped when idle, like a Child, but owns no process.
+_Avoid_: Connection (a Link outlives TCP connections), Child (a Child is a process)

@@ -17,3 +17,4 @@ Architecture decision records (ADRs). Each decision's frontmatter `status` says 
 - [ADR-0002 — Each Grant shares one on-demand child process across its MCP Sessions, and the Grant's Identity enters through its environment](0002-each-grant-shares-one-child-identity-enters-through-the-environment.md) (proposed)
 - [ADR-0003 — Two listeners split the public surface from everything a person clicks](0003-two-listeners-anything-a-person-clicks-lives-on-the-tailnet.md) (accepted)
 - [ADR-0004 — The Admin listener may bind loopback behind a tailnet forward](0004-the-admin-listener-may-bind-loopback-behind-a-tailnet-forward.md) (accepted)
+- [ADR-0005 — An HTTP Service is reached through one Link per Grant, behind the same Sessions as a Child](0005-an-http-service-is-reached-through-one-link-per-grant.md) (proposed)
