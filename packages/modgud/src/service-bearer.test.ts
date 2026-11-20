@@ -213,23 +213,26 @@ describe('readServiceBearer file failures', () => {
     });
   });
 
-  // procfs files report a size of 0 whatever they hold, so only the read
-  // itself shows that this one is larger than 64 KiB.
-  test.skipIf(process.platform !== 'linux')(
-    'fails with unreadable for a file that reports a small size but holds more than 64 KiB',
-    async () => {
-      // The file must open as a regular file that reports a size of 0, or the
-      // reader refuses it before the read and the check after it goes untested.
-      const handle = await open('/proc/kallsyms');
-      const stats = await handle.stat();
-      await handle.close();
-      expect(stats.isFile() && stats.size === 0).toBe(true);
-      expect(await readServiceBearer({ bearer_file: '/proc/kallsyms' }, home)).toEqual({
+  // A file may hold more than its size says, as a procfs file, which reports a
+  // size of 0, or one that grew after the check does. Only the read itself
+  // shows it, so the size is reported as 0 here.
+  test('fails with unreadable for a file that reports a small size but holds more than 64 KiB', async () => {
+    const path = await fileWith('underreported', 'a'.repeat(64 * 1024 + 1));
+    const handle = await open(path);
+    const stats = await handle.stat();
+    const prototype: { stat: () => Promise<typeof stats> } = Object.getPrototypeOf(handle);
+    await handle.close();
+    const stat = spyOn(prototype, 'stat').mockResolvedValue(Object.assign(stats, { size: 0 }));
+    try {
+      expect(await readServiceBearer({ bearer_file: path }, home)).toEqual({
         failure: 'unreadable',
         kind: 'failed',
       });
-    },
-  );
+      expect(stat).toHaveBeenCalledTimes(1);
+    } finally {
+      stat.mockRestore();
+    }
+  });
 
   test('reads a file of up to 64 KiB, and fails with unreadable for a larger one', async () => {
     const largest = await fileWith('largest', 'a'.repeat(64 * 1024));
