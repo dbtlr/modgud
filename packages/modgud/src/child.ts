@@ -3,8 +3,23 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/server';
 
 import { CHILD_LOG_LIMIT } from './log.ts';
 
-// How long a Child gets to exit after SIGTERM before it is killed.
+// How long a Child's process group gets to exit after SIGTERM before it is
+// killed.
 const STOP_GRACE_MS = 2000;
+
+// How often stop() checks whether a Child's process group has exited.
+const STOP_POLL_MS = 50;
+
+// Sends a signal to every process in a process group. Resolves to whether the
+// group still had a process to receive it: only ESRCH means it had none.
+const signalGroup = (groupId: number, signal: NodeJS.Signals | 0) => {
+  try {
+    process.kill(-groupId, signal);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && 'code' in error && error.code === 'ESRCH');
+  }
+};
 
 // The first `limit` code points of `text`, and how many that is. It reads no
 // further than it needs.
@@ -48,6 +63,9 @@ const asError = (error: unknown) => (error instanceof Error ? error : new Error(
 // A Service process that speaks MCP over stdio. Unlike the SDK's stdio client
 // transport, which always adds variables from Modgud's own environment, it
 // starts the process with exactly the environment it is given (ADR-0002).
+// The process leads a new session and process group, so stopping the Child
+// also stops what a wrapper such as `sh -c` started, even after the wrapper
+// itself has exited.
 export class Child {
   readonly #options: ChildOptions;
   #process: Bun.Subprocess<'pipe', 'pipe', 'pipe'> | undefined;
@@ -62,6 +80,8 @@ export class Child {
     const { args, command, cwd, environment } = this.#options;
     const process = Bun.spawn([command, ...args], {
       ...(cwd === undefined ? {} : { cwd }),
+      // setsid(): the process leads its own process group, which stop() signals.
+      detached: true,
       env: environment,
       stderr: 'pipe',
       stdin: 'pipe',
@@ -160,15 +180,25 @@ export class Child {
     await stdin.flush();
   }
 
-  // Stops the process: SIGTERM, then SIGKILL if it has not exited in time.
+  // Stops the process group: SIGTERM, then SIGKILL to whatever is left of it
+  // once the grace period ends. It stops a group whose leader has already
+  // exited too, as when a wrapper left a process running.
   async stop() {
     const process = this.#process;
-    if (process === undefined || process.exitCode !== null || process.signalCode !== null) {
+    if (process === undefined) {
       return;
     }
-    process.kill('SIGTERM');
-    const timer = setTimeout(() => process.kill('SIGKILL'), STOP_GRACE_MS);
+    const groupId = process.pid;
+    let running = signalGroup(groupId, 'SIGTERM');
+    const deadline = Date.now() + STOP_GRACE_MS;
+    while (running && Date.now() < deadline) {
+      // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
+      await Bun.sleep(STOP_POLL_MS);
+      running = signalGroup(groupId, 0);
+    }
+    if (running) {
+      signalGroup(groupId, 'SIGKILL');
+    }
     await process.exited;
-    clearTimeout(timer);
   }
 }

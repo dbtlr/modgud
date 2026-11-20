@@ -1,15 +1,15 @@
-import { expect, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 
 import { Child } from './child.ts';
 import { waitFor } from './testing/listener-harness.ts';
 
-// Starts a Bun script as a Child and collects the stderr lines it reports.
-const runScript = (script: string) => {
+// Starts a command as a Child and collects the stderr lines it reports.
+const run = (command: string, args: string[]) => {
   const lines: string[] = [];
   const exited = Promise.withResolvers<void>();
   const child = new Child({
-    args: ['-e', script],
-    command: process.execPath,
+    args,
+    command,
     cwd: undefined,
     environment: { PATH: process.env.PATH ?? '' },
     onExit: () => exited.resolve(),
@@ -21,6 +21,58 @@ const runScript = (script: string) => {
   child.start();
   return { child, exited: exited.promise, lines };
 };
+
+// Starts a Bun script as a Child.
+const runScript = (script: string) => run(process.execPath, ['-e', script]);
+
+// A process the wrapper starts in the background. It reports its pid on
+// stderr, then ignores SIGTERM and never reads stdin, so neither a signal to
+// the wrapper nor stdin EOF stops it.
+const STUBBORN = `sh -c 'trap "" TERM; echo $$ >&2; exec sleep 60' &`;
+
+const stubbornPids: number[] = [];
+
+// Whether a process with this pid exists.
+const isRunning = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Starts a wrapper script as a Child and waits for its stubborn process's pid.
+const runWrapper = async (script: string) => {
+  const started = run('/bin/sh', ['-c', script]);
+  await waitFor(() => started.lines.length > 0);
+  const pid = Number(started.lines[0]);
+  stubbornPids.push(pid);
+  return { ...started, pid };
+};
+
+afterEach(() => {
+  for (const pid of stubbornPids.splice(0)) {
+    if (isRunning(pid)) {
+      process.kill(pid, 'SIGKILL');
+    }
+  }
+});
+
+test('stopping a wrapped Child stops the process it started that ignores SIGTERM and stdin EOF', async () => {
+  const { child, pid } = await runWrapper(`${STUBBORN} wait`);
+  expect(isRunning(pid)).toBe(true);
+  await child.stop();
+  await waitFor(() => !isRunning(pid), 1000);
+}, 10_000);
+
+test('stopping a Child whose wrapper already exited stops the process it left behind', async () => {
+  const { child, exited, pid } = await runWrapper(STUBBORN);
+  await exited;
+  expect(isRunning(pid)).toBe(true);
+  await child.stop();
+  await waitFor(() => !isRunning(pid), 1000);
+}, 10_000);
 
 test('a stderr line past 2000 code points is reported at once, cut, and its rest dropped', async () => {
   // Half the line, a pause, the rest of it, then a short line.
