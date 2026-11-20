@@ -546,16 +546,12 @@ describe('the tool call limit', () => {
     await callPid(first.client);
     const refused = await first.client.callTool({ arguments: {}, name: 'pid' });
 
-    expect(refused).toMatchObject({
-      _meta: { 'com.dbtlr.modgud/retryAfterSeconds': 60 },
-      content: [
-        {
-          text: 'Rate limit reached: the limit is 1 tool call per minute. Try again in 60 seconds.',
-          type: 'text',
-        },
-      ],
-      isError: true,
-    });
+    // The wait is 60 seconds, or 59 when over a second passed between calls.
+    expect(refused).toMatchObject({ isError: true });
+    expect(refused._meta?.['com.dbtlr.modgud/retryAfterSeconds']).toBeOneOf([59, 60]);
+    expect(firstText(refused)).toMatch(
+      /^Rate limit reached: the limit is 1 tool call per minute\. Try again in (59|60) seconds\.$/u,
+    );
     expect(await callPid(oauth.client)).toMatch(/^\d+$/u);
     expect(lines.filter((line) => line.includes('reached its limit'))).toHaveLength(1);
   });

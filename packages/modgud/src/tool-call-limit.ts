@@ -86,7 +86,7 @@ export class ToolCallLimit {
     }
     this.#window.record(GRANT);
     if (this.#episode !== undefined && now - this.#episode.lastRefusalAt >= WINDOW_MS) {
-      this.end();
+      this.endEpisode();
     }
     return { kind: 'send' };
   }
@@ -94,7 +94,7 @@ export class ToolCallLimit {
   // Ends the current episode, if any, logging how many calls it refused: at
   // the first call sent after a quiet window, or when the Grant ends or
   // Modgud shuts down.
-  end() {
+  endEpisode() {
     if (this.#episode !== undefined) {
       this.#log.info(
         `${this.#label} ended a tool call limit episode: it refused ${plural(this.#episode.refused, 'tool call', 'tool calls')}.`,

@@ -29,7 +29,7 @@ const settle = async () => {
 
 // One run of the scripted Service. It answers each request it is sent at
 // once, unless `holding` keeps its answers back, and starts as soon as asked
-// unless `startGate` holds the start.
+// unless `startGate` holds the start or `failStarts` fails it.
 type ScriptedRun = {
   sent: JSONRPCRequest[];
   // Stops the run as a Child that exits, or a Link whose Service went away.
@@ -39,7 +39,11 @@ type ScriptedRun = {
 const scriptedService = ({ restartsAtOnce }: { restartsAtOnce: boolean }) => {
   const runs: ScriptedRun[] = [];
   const held: { events: UpstreamEvents; id: RequestId }[] = [];
-  const control = { holding: false, startGate: undefined as Promise<void> | undefined };
+  const control = {
+    failStarts: 0,
+    holding: false,
+    startGate: undefined as Promise<void> | undefined,
+  };
   const factory = (events: UpstreamEvents): Upstream => {
     const stopped = Promise.withResolvers<void>();
     const run: ScriptedRun = {
@@ -64,6 +68,11 @@ const scriptedService = ({ restartsAtOnce }: { restartsAtOnce: boolean }) => {
       restartsAtOnce,
       start: async (): Promise<StartResult> => {
         await control.startGate;
+        if (control.failStarts > 0) {
+          control.failStarts -= 1;
+          stopped.resolve();
+          return { kind: 'failed', reason: 'scripted failure' };
+        }
         return {
           kind: 'started',
           result: { capabilities: { tools: {} }, protocolVersion: '2025-11-25', serverInfo: {} },
@@ -71,7 +80,8 @@ const scriptedService = ({ restartsAtOnce }: { restartsAtOnce: boolean }) => {
       },
       stop: () => stopped.resolve(),
       stopped: stopped.promise,
-      workOutlivesStop: !restartsAtOnce,
+      // As for the real Upstreams: a Child's work stops with it, a Link's may not.
+      workOutlivesStop: restartsAtOnce,
     };
   };
   // Answers every request held back.
@@ -249,6 +259,38 @@ describe('counting', () => {
     expect(refusalTo(await call(SECOND))).toBeDefined();
   });
 
+  test('a call that is cancelled after it is handed over still counts', async () => {
+    const { call, refusalTo, relay, service, session } = fixture({ limit: 1 });
+    service.control.holding = true;
+
+    const cancelled = await call(0);
+    relay.cancel(session, cancelled, {
+      jsonrpc: '2.0',
+      method: 'notifications/cancelled',
+      params: { requestId: cancelled },
+    });
+    await settle();
+    service.control.holding = false;
+
+    expect(refusalTo(await call(SECOND))).toBeDefined();
+  });
+
+  test('a call that fails because its Service could not start does not count', async () => {
+    const { answerTo, call, refusalTo, service } = fixture({
+      limit: 1,
+      limits: { backoffBaseMs: 1, backoffMaxMs: 1 },
+    });
+    service.control.failStarts = 1;
+
+    const failed = await call(0);
+    expect(answerTo(failed)).toMatchObject({ error: {} });
+    // Let the 1 ms backoff pass on the relay's own clock.
+    await Bun.sleep(5);
+
+    expect(refusalTo(await call(SECOND))).toBeUndefined();
+    expect(service.sentTools()).toHaveLength(1);
+  });
+
   for (const [kind, restartsAtOnce] of [
     ['Child', false],
     ['Link', true],
@@ -361,7 +403,10 @@ describe('episode logging', () => {
     await call(700 * SECOND);
     expect(started(warnings)).toHaveLength(1);
     expect(info).toHaveLength(1);
-    expect(info[0]).toMatch(/episode: it refused \d+ tool calls\.$/u);
+    // Refused at 40, 100, ..., 580 seconds: every third call, 10 in all.
+    expect(info).toEqual([
+      'stub child for static-token ended a tool call limit episode: it refused 10 tool calls.',
+    ]);
 
     // A refusal right after the episode ended starts the next one, which is
     // at least 60 seconds after the last one started.
@@ -371,16 +416,37 @@ describe('episode logging', () => {
   });
 
   test('a call refused for another reason neither starts nor ends an episode', async () => {
-    const { call, info, warnings, service } = fixture({
+    const { call, info, relay, service, session, warnings } = fixture({
       limit: 1,
       limits: { requestsPerGrant: 1 },
     });
     service.control.holding = true;
 
     await call(0);
+    // Refused for ADR-0002's request limit: one request is open.
     await call(SECOND);
     expect(started(warnings)).toEqual([]);
+    service.answerHeld();
+    service.control.holding = false;
+
+    // Now an episode: refused for this limit.
+    await call(2 * SECOND);
+    expect(started(warnings)).toHaveLength(1);
+
+    // After a quiet minute, a refusal for the request limit does not end it.
+    service.control.holding = true;
+    relay.forward(session, { id: 'held-list', jsonrpc: '2.0', method: 'tools/list' });
+    await call(70 * SECOND);
     expect(info).toEqual([]);
+    service.answerHeld();
+    service.control.holding = false;
+
+    // The first call handed over ends it, counting only this limit's refusal.
+    await call(71 * SECOND);
+    expect(info).toEqual([
+      'stub child for static-token ended a tool call limit episode: it refused 1 tool call.',
+    ]);
+    expect(started(warnings)).toHaveLength(1);
   });
 
   for (const kind of ['grant ended', 'shutdown'] as const) {

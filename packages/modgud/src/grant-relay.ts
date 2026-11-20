@@ -295,7 +295,7 @@ export class GrantRelay {
   async end(kind: 'grant ended' | 'shutdown'): Promise<void> {
     if (this.#ended === undefined) {
       this.#ended = kind;
-      this.#toolCalls.end();
+      this.#toolCalls.endEpisode();
       for (const session of this.#sessions) {
         session.end(kind === 'shutdown' ? 'shutdown' : 'authorization ended');
       }
