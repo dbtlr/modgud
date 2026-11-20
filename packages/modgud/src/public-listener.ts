@@ -6,11 +6,12 @@ import {
 
 import { bearerToken, matchesTokenHash } from './bearer.ts';
 import { childEnvironment } from './child-environment.ts';
+import { createChildUpstream } from './child-upstream.ts';
 import { clientLabel } from './client-metadata.ts';
 import { serviceResource } from './config.ts';
 import type { Config, ProcessServiceConfig } from './config.ts';
-import { CHILD_LIMITS, GrantChild } from './grant-child.ts';
-import type { ChildLimits } from './grant-child.ts';
+import { GRANT_LIMITS, GrantRelay } from './grant-relay.ts';
+import type { GrantLimits } from './grant-relay.ts';
 import { answerUnexpectedError } from './http.ts';
 import type { PeerAddress } from './http.ts';
 import { excerpt, loggable } from './log.ts';
@@ -125,7 +126,7 @@ export const createPublicListener = ({
 }: {
   authorizationSweepMs?: number;
   // Shorter bounds on each Grant's Child, for tests.
-  childLimits?: Partial<ChildLimits>;
+  childLimits?: Partial<GrantLimits>;
   config: Config;
   log: Log;
   // Milliseconds since the epoch, for the registration limits.
@@ -134,12 +135,12 @@ export const createPublicListener = ({
   storeCleanupMs?: number;
   store: Store;
 }): PublicListener => {
-  const limits: ChildLimits = { ...CHILD_LIMITS, ...childLimits };
+  const limits: GrantLimits = { ...GRANT_LIMITS, ...childLimits };
   // Every open Session, by id.
   const sessions = new Map<string, Session>();
   // Each Grant's shared Child, by Service and Grant id, from the Grant's
   // first initialize until the Grant ends or Modgud shuts down.
-  const children = new Map<string, GrantChild>();
+  const children = new Map<string, GrantRelay>();
   // Children that ended for good, until they have exited.
   const ending = new Set<Promise<void>>();
   let closing = false;
@@ -152,15 +153,22 @@ export const createPublicListener = ({
     const key = childKey(serviceName, grant.id);
     let child = children.get(key);
     if (child === undefined) {
-      child = new GrantChild({
-        command: service,
-        environment: () =>
-          childEnvironment({ identity: grant.identity, parent: parentEnvironment, service }),
+      const label = `${serviceName} child for ${grantLabel(grant.id)}`;
+      child = new GrantRelay({
         grant: grant.id,
-        grantLabel: grantLabel(grant.id),
+        idleTimeoutMs: service.idle_timeout_minutes * 60_000,
+        label,
         limits,
         log,
         service: serviceName,
+        upstream: createChildUpstream({
+          command: service,
+          environment: () =>
+            childEnvironment({ identity: grant.identity, parent: parentEnvironment, service }),
+          label,
+          log,
+          startTimeoutMs: limits.startTimeoutMs,
+        }),
       });
       children.set(key, child);
     }
@@ -174,7 +182,7 @@ export const createPublicListener = ({
   };
 
   // Ends a Grant's Sessions and stops its Child for good.
-  const endChild = (child: GrantChild, kind: 'grant ended' | 'shutdown') => {
+  const endChild = (child: GrantRelay, kind: 'grant ended' | 'shutdown') => {
     children.delete(childKey(child.service, child.grant));
     void untilExited(child.end(kind));
   };

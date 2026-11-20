@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 
-import type { GrantChild } from './grant-child.ts';
+import type { GrantRelay } from './grant-relay.ts';
 import { initializeAnswer } from './protocol.ts';
 import { Session } from './session.ts';
 
@@ -11,7 +11,7 @@ const VERSION = '2025-11-25';
 // opens it, opens GET streams, and delivers notifications to it.
 const openSession = async () => {
   const lines: string[] = [];
-  const child = { release: () => [] } as unknown as GrantChild;
+  const child = { release: () => [] } as unknown as GrantRelay;
   const session = new Session({
     child,
     grant: 'grant',

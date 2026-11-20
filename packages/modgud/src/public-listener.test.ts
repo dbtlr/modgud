@@ -261,7 +261,7 @@ describe('ending a Session', () => {
   test('a Child that never answers initialize is stopped within the bound, and the initialize gets 502', async () => {
     const marker = `marker-${crypto.randomUUID()}`;
     const { lines, listener, url } = await start({
-      childLimits: { initializeTimeoutMs: 200 },
+      childLimits: { startTimeoutMs: 200 },
       marker,
       stubEnv: { STUB_MODE: 'mute' },
     });

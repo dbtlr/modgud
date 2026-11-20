@@ -1,8 +1,9 @@
-// One Grant's shared Child (ADR-0002): a Service process started on demand,
-// initialized by Modgud itself, and shared by every Session the Grant opens.
-// It renumbers what identifies each Caller request, routes what the Child
-// sends back to the Session it belongs to, answers what the Child asks of a
-// Caller, and stops the Child when idle, broken, or no longer wanted.
+// One Grant's shared relay (ADR-0002, ADR-0005): everything a Grant keeps
+// across runs of its Service, whatever serves it. It renumbers what
+// identifies each Caller request, routes what the Service sends back to the
+// Session it belongs to, answers what the Service asks of a Caller, and stops
+// the run when idle, broken, or no longer wanted. How messages reach the
+// Service is an Upstream's job (upstream.ts): GrantRelay drives one per run.
 import {
   isJSONRPCErrorResponse,
   isJSONRPCNotification,
@@ -18,53 +19,48 @@ import type {
   RequestId,
 } from '@modelcontextprotocol/server';
 
-import packageMetadata from '../package.json';
 import { Backoff } from './backoff.ts';
-import { Child } from './child.ts';
-import type { ExitStatus } from './child.ts';
-import type { ProcessServiceConfig } from './config.ts';
-import { CHILD_LOG_LIMIT, excerpt, loggable } from './log.ts';
+import { CHILD_LOG_LIMIT, excerpt } from './log.ts';
 import type { Log } from './log.ts';
 import {
-  CHILD_PROTOCOL_VERSION,
   emptyResult,
   ERRORS,
   errorResponse,
   notificationParam,
-  parseChildInitializeResult,
   renumbered,
   requestProgressToken,
   stillMatches,
 } from './protocol.ts';
 import type { ChildInitializeResult, Given, ProgressToken } from './protocol.ts';
+import type { StopReason, Upstream, UpstreamFactory } from './upstream.ts';
 
-// The bounds on a Grant's Child and the requests it holds. Tests shorten them.
-export type ChildLimits = {
-  // How long a Child has to answer Modgud's `initialize`.
-  initializeTimeoutMs: number;
+// The bounds on a Grant's Service run and the requests it holds. Tests
+// shorten them.
+export type GrantLimits = {
+  // How long a run has to complete Modgud's `initialize`. An Upstream
+  // enforces it; GrantRelay only carries it to whoever builds the Upstream.
+  startTimeoutMs: number;
   // The wait after one failed start, doubling up to `backoffMaxMs`.
   backoffBaseMs: number;
   backoffMaxMs: number;
-  // How long a Child must run for its failures to be forgotten.
+  // How long a run must last for its failures to be forgotten.
   backoffResetMs: number;
-  // The Caller requests a Grant may have waiting for its Child or in flight.
+  // The Caller requests a Grant may have waiting for the Service or in flight.
   requestsPerGrant: number;
-  // How long a cancelled request keeps counting if the Child never answers.
+  // How long a cancelled request keeps counting if the Service never answers.
   cancelledHoldMs: number;
 };
 
-export const CHILD_LIMITS: ChildLimits = {
+export const GRANT_LIMITS: GrantLimits = {
   backoffBaseMs: 1000,
   backoffMaxMs: 60_000,
   backoffResetMs: 60_000,
   cancelledHoldMs: 60_000,
-  initializeTimeoutMs: 30_000,
   requestsPerGrant: 64,
+  startTimeoutMs: 30_000,
 };
 
-const MODGUD_INFO = { name: 'modgud', version: packageMetadata.version };
-
-// What a Grant's Child needs of each Session it serves.
+// What a Grant's relay needs of each Session it serves.
 export type GrantSession = {
   readonly ended: boolean;
   // What the Session was given at `initialize`; undefined while it opens.
@@ -81,78 +77,77 @@ export type GrantSession = {
   end: (reason: 'authorization ended' | 'child changed' | 'evicted' | 'shutdown') => void;
 };
 
-// Why a Caller's `initialize` cannot be answered: the Child could not start
+// Why a Caller's `initialize` cannot be answered: the Service could not start
 // or is backing off, Modgud is shutting down, or the Grant ended.
 export type Unavailable = 'failed' | 'grant ended' | 'shutdown';
 
 export type Readiness = { kind: 'ready'; result: ChildInitializeResult } | { kind: Unavailable };
 
-// A Caller request that waits for the Child to start.
+// A Caller request that waits for the Service to start.
 type Waiting = { message: JSONRPCRequest; session: GrantSession };
 
-// A Caller request forwarded to the Child, by its Child-side id.
+// A Caller request forwarded to the Service, by its Upstream-side id.
 type InFlight = {
   callerId: RequestId;
   callerToken: ProgressToken | undefined;
-  childId: number;
-  childToken: number | undefined;
+  upstreamId: number;
+  upstreamToken: number | undefined;
   session: GrantSession;
 };
 
-// One process of the Grant's Child, from its start until it has exited.
+// One run of the Grant's Service, from its start until it has stopped.
 type Run = {
-  process: Child;
-  exited: PromiseWithResolvers<void>;
-  initializeId: number;
-  // Set once the Child has answered `initialize`.
+  upstream: Upstream;
+  // Set once the Upstream has started.
   result: ChildInitializeResult | undefined;
-  // Set once Modgud has decided to stop it; it sends the Child nothing more.
+  // Set once Modgud has decided to stop it; it sends the Upstream nothing more.
   stopping: boolean;
-  timers: { idle?: Timer; initialize?: Timer; reset?: Timer };
+  timers: { idle?: Timer; reset?: Timer };
 };
 
 const sameId = (a: RequestId, b: RequestId) => typeof a === typeof b && a === b;
 
-const describeExit = ({ code, signal }: ExitStatus) =>
-  signal === null ? `exited with status ${String(code)}` : `exited on ${signal}`;
-
-export type GrantChildOptions = {
-  command: Pick<ProcessServiceConfig, 'args' | 'command' | 'cwd' | 'idle_timeout_minutes'>;
-  // The Child's environment, built at each start.
-  environment: () => Record<string, string>;
+export type GrantRelayOptions = {
   grant: string;
-  // A short name for the Grant in log lines.
-  grantLabel: string;
-  limits: ChildLimits;
+  // The Service's log label, such as "norn child for <grant>".
+  label: string;
+  // How long a started run may pass without a message before it is stopped.
+  idleTimeoutMs: number;
+  limits: GrantLimits;
   log: Log;
   service: string;
+  // Creates the Upstream for each run.
+  upstream: UpstreamFactory;
 };
 
-export class GrantChild {
+export class GrantRelay {
   readonly grant: string;
   readonly service: string;
-  readonly #options: GrantChildOptions;
+  readonly #options: GrantRelayOptions;
   readonly #log: Log;
-  readonly #limits: ChildLimits;
+  readonly #limits: GrantLimits;
   readonly #backoff: Backoff;
   // Every Session of the Grant, those still opening included.
   readonly #sessions = new Set<GrantSession>();
-  // Callers of `ready`, waiting for the Child to start.
+  // Callers of `ready`, waiting for the Service to start.
   #readyWaiters: ((readiness: Readiness) => void)[] = [];
   #waiting: Waiting[] = [];
   readonly #inFlight = new Map<number, InFlight>();
   readonly #progress = new Map<number, InFlight>();
   // Forwarded requests that were cancelled but still count against the limit
-  // until the Child answers them, the Child stops, or the hold passes.
+  // until the Service answers them, the run stops (unless its work outlives
+  // the stop), or the hold passes.
   readonly #held = new Map<number, Timer>();
-  // Child-side ids and progress tokens, never reused.
+  // The `stopped` of every Upstream that has not yet settled.
+  readonly #unsettled = new Set<Promise<void>>();
+  // Upstream-side ids and progress tokens, never reused.
   #lastId = 0;
   #lastToken = 0;
   #run: Run | undefined;
-  // Set once the Grant has ended or Modgud is shutting down: no Child starts again.
+  // Set once the Grant has ended or Modgud is shutting down: no run starts again.
   #ended: 'grant ended' | 'shutdown' | undefined;
 
-  constructor(options: GrantChildOptions) {
+  constructor(options: GrantRelayOptions) {
     this.#options = options;
     this.grant = options.grant;
     this.service = options.service;
@@ -166,7 +161,7 @@ export class GrantChild {
   }
 
   get #label() {
-    return `${this.service} child for ${this.#options.grantLabel}`;
+    return this.#options.label;
   }
 
   // Adds a Session that is opening. At the limit, it first ends the Grant's
@@ -192,7 +187,7 @@ export class GrantChild {
     return true;
   }
 
-  // Settles once the Child is running, starting it when needed, with its
+  // Settles once the Service is running, starting it when needed, with its
   // initialize result, or with why it is unavailable.
   ready(): Promise<Readiness> {
     if (this.#ended !== undefined) {
@@ -208,9 +203,9 @@ export class GrantChild {
     return ready.promise;
   }
 
-  // Forwards a Caller request to the Child, starting it when needed, or
+  // Forwards a Caller request to the Service, starting it when needed, or
   // answers it with an error when the Grant holds too many requests or the
-  // Child cannot start.
+  // Service cannot start.
   forward(session: GrantSession, message: JSONRPCRequest) {
     // An ended Session's work is never forwarded (ADR-0002).
     if (session.ended) {
@@ -240,7 +235,7 @@ export class GrantChild {
   }
 
   // A Caller's `notifications/cancelled` for one of its Session's requests.
-  // A waiting request is dropped; one in flight is cancelled on the Child.
+  // A waiting request is dropped; one in flight is cancelled on the Service.
   // A cancellation that names neither is dropped.
   cancel(session: GrantSession, callerId: RequestId, notification: JSONRPCNotification) {
     const waiting = this.#waiting.findIndex(
@@ -259,7 +254,7 @@ export class GrantChild {
   }
 
   // Drops a Session's work as it ends: its waiting requests are never
-  // forwarded, and those in flight are cancelled on the Child. Returns the
+  // forwarded, and those in flight are cancelled on the Service. Returns the
   // Caller ids of both, which are still open on the Session.
   release(session: GrantSession): RequestId[] {
     this.#sessions.delete(session);
@@ -280,9 +275,10 @@ export class GrantChild {
     return open;
   }
 
-  // Ends the Grant's Sessions and stops its Child, including one still
+  // Ends the Grant's Sessions and stops its run, including one still
   // starting, for good: on shutdown, or when the Grant ends. Requests still
-  // waiting fail without being forwarded. Resolves once the Child has exited.
+  // waiting fail without being forwarded. Resolves once the Upstream has
+  // stopped.
   async end(kind: 'grant ended' | 'shutdown'): Promise<void> {
     if (this.#ended === undefined) {
       this.#ended = kind;
@@ -291,15 +287,16 @@ export class GrantChild {
       }
       this.#failWaiting(kind);
       if (this.#run !== undefined) {
-        this.#stop(this.#run, kind === 'shutdown' ? 'shutdown' : 'authorization ended', false);
+        this.#stop(this.#run, kind === 'shutdown' ? 'shutdown' : 'authorization ended');
       }
     }
-    await this.#run?.exited.promise;
+    await Promise.all(this.#unsettled);
   }
 
-  // Starts a Child when something waits for one and none is starting or
-  // stopping. A stopping Child is replaced only once it has exited. During
-  // backoff, everything waiting fails at once.
+  // Starts a run when something waits for one and none is starting or
+  // stopping. A stopping run is replaced only once its Upstream has stopped,
+  // unless the Upstream restarts at once. During backoff, everything waiting
+  // fails at once.
   #demand() {
     if (this.#run !== undefined || this.#ended !== undefined) {
       return;
@@ -315,61 +312,48 @@ export class GrantChild {
   }
 
   #start() {
-    const { args, command, cwd } = this.#options.command;
-    // The callbacks run only once the process has started, after `run` is set.
-    const process = new Child({
-      args,
-      command,
-      cwd,
-      environment: this.#options.environment(),
-      onExit: (status) => this.#exited(run, status),
-      onFatal: (error) => {
-        this.#log.warn(`${this.#label} unreadable output: ${loggable(error.message)}`);
-        this.#stop(run, 'unreadable output', true);
-      },
-      onMessage: (message) => this.#fromChild(run, message),
-      onStderr: (line) => {
-        if (line.trim() !== '') {
-          this.#log.info(`${this.#label} stderr: ${excerpt(line, CHILD_LOG_LIMIT)}`);
-        }
-      },
-      onUnreadable: (error) => {
-        this.#log.warn(`${this.#label} unreadable message: ${loggable(error.message)}`);
-      },
-    });
+    // The Upstream's events fire only once it has started, after `run` is set.
     const run: Run = {
-      exited: Promise.withResolvers<void>(),
-      initializeId: this.#nextId(),
-      process,
       result: undefined,
       stopping: false,
       timers: {},
+      upstream: this.#options.upstream(
+        {
+          onMessage: (message) => this.#fromUpstream(run, message),
+          onRequestFailed: (id) => this.#requestFailed(id),
+          onStopped: (_reason, failure) => this.#stoppedByUpstream(run, failure),
+        },
+        () => this.#nextId(),
+      ),
     };
-    try {
-      run.process.start();
-    } catch (error) {
-      this.#log.warn(`${this.#label} could not start: ${loggable(String(error))}`);
-      this.#backoff.failed();
-      this.#failWaiting('failed');
-      return;
-    }
     this.#run = run;
-    this.#log.info(`${this.#label} started, pid ${String(run.process.pid)}.`);
-    run.timers.initialize = setTimeout(
-      () => this.#stop(run, 'initialize timed out', true),
-      this.#limits.initializeTimeoutMs,
-    );
+    const { stopped } = run.upstream;
+    this.#unsettled.add(stopped);
     run.timers.reset = setTimeout(() => this.#backoff.reset(), this.#limits.backoffResetMs);
-    void this.#write(run, {
-      id: run.initializeId,
-      jsonrpc: '2.0',
-      method: 'initialize',
-      params: {
-        capabilities: {},
-        clientInfo: MODGUD_INFO,
-        protocolVersion: CHILD_PROTOCOL_VERSION,
-      },
-    });
+    // The start's outcome is handled before the stop, even if both are settled.
+    void this.#awaitStart(run);
+    void this.#afterStopped(run, stopped);
+  }
+
+  // Handles how the run's start ended. A failed start was already stopped by
+  // the Upstream.
+  async #awaitStart(run: Run) {
+    const outcome = await run.upstream.start();
+    if (outcome.kind === 'started') {
+      this.#started(run, outcome.result);
+    } else {
+      this.#stoppedByUpstream(run, true);
+    }
+  }
+
+  // Once the run's Upstream has stopped, the next run may start.
+  async #afterStopped(run: Run, stopped: Promise<void>) {
+    await stopped;
+    this.#unsettled.delete(stopped);
+    if (this.#run === run) {
+      this.#run = undefined;
+    }
+    this.#demand();
   }
 
   #nextId() {
@@ -377,128 +361,24 @@ export class GrantChild {
     return this.#lastId;
   }
 
-  // Writes to the Child unless Modgud has decided to stop it, and restarts
-  // its idle clock. Resolves to whether the write succeeded.
-  async #write(run: Run, message: JSONRPCMessage): Promise<boolean> {
-    if (run.stopping) {
-      return false;
-    }
-    this.#armIdle(run);
-    try {
-      await run.process.send(message);
-      return true;
-    } catch (error) {
-      this.#log.warn(`${this.#label} could not write to the Child: ${loggable(String(error))}`);
-      return false;
-    }
-  }
-
-  // The idle clock starts once the Child has answered `initialize` and
-  // restarts with every message in either direction.
+  // The idle clock starts once the run has started and restarts with every
+  // message in either direction.
   #armIdle(run: Run) {
     clearTimeout(run.timers.idle);
     if (run.result === undefined || run.stopping) {
       return;
     }
-    run.timers.idle = setTimeout(
-      () => this.#stop(run, 'idle', false),
-      this.#options.command.idle_timeout_minutes * 60_000,
-    );
+    run.timers.idle = setTimeout(() => this.#stop(run, 'idle'), this.#options.idleTimeoutMs);
   }
 
-  #send(run: Run, session: GrantSession, message: JSONRPCRequest) {
-    const callerToken = requestProgressToken(message);
-    const entry: InFlight = {
-      callerId: message.id,
-      callerToken,
-      childId: this.#nextId(),
-      childToken: undefined,
-      session,
-    };
-    if (callerToken !== undefined) {
-      this.#lastToken += 1;
-      entry.childToken = this.#lastToken;
-      this.#progress.set(entry.childToken, entry);
-    }
-    this.#inFlight.set(entry.childId, entry);
-    void this.#forwardWritten(run, entry, renumbered(message, entry.childId, entry.childToken));
-  }
-
-  // Writes a forwarded request, answering it with an error when the Child
-  // cannot receive it.
-  async #forwardWritten(run: Run, entry: InFlight, message: JSONRPCRequest) {
-    const written = await this.#write(run, message);
-    if (!written && this.#inFlight.get(entry.childId) === entry) {
-      this.#forget(entry);
-      entry.session.deliver(errorResponse(entry.callerId, ERRORS.unreachable), { activity: true });
-    }
-  }
-
-  // Releases a request's Child-side id and token for routing.
-  #forget(entry: InFlight) {
-    this.#inFlight.delete(entry.childId);
-    if (entry.childToken !== undefined) {
-      this.#progress.delete(entry.childToken);
-    }
-  }
-
-  // Cancels a forwarded request on the Child. Its id and token are released
-  // at once, but it keeps counting against the limit until the Child answers
-  // it, the Child stops, or the hold passes.
-  #cancelInFlight(entry: InFlight, notification: JSONRPCNotification | undefined) {
-    this.#forget(entry);
-    this.#held.set(
-      entry.childId,
-      setTimeout(() => this.#held.delete(entry.childId), this.#limits.cancelledHoldMs),
-    );
-    if (this.#run !== undefined) {
-      void this.#write(this.#run, {
-        jsonrpc: '2.0',
-        method: 'notifications/cancelled',
-        params: { ...notification?.params, requestId: entry.childId },
-      });
-    }
-  }
-
-  #fromChild(run: Run, message: JSONRPCMessage) {
-    if (run !== this.#run || run.stopping) {
+  // The Upstream has completed `initialize`. Before forwarding anything that
+  // waits, it ends each Session that no longer matches the new result.
+  #started(run: Run, result: ChildInitializeResult) {
+    if (run.stopping) {
       return;
     }
-    this.#armIdle(run);
-    if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
-      if (run.result === undefined && message.id === run.initializeId) {
-        this.#initialized(run, message);
-      } else {
-        this.#response(message);
-      }
-    } else if (isJSONRPCRequest(message)) {
-      this.#childRequest(run, message);
-    } else if (isJSONRPCNotification(message)) {
-      this.#notification(message);
-    }
-  }
-
-  // The Child's answer to Modgud's `initialize`. Before forwarding anything
-  // that waits, it ends each Session that no longer matches the new Child.
-  #initialized(run: Run, message: JSONRPCMessage) {
-    const result = isJSONRPCResultResponse(message)
-      ? parseChildInitializeResult(message.result)
-      : undefined;
-    if (result === undefined) {
-      this.#log.warn(
-        `${this.#label} answered initialize with ${excerpt(JSON.stringify(message), CHILD_LOG_LIMIT)}`,
-      );
-      this.#stop(
-        run,
-        isJSONRPCErrorResponse(message) ? 'initialize failed' : 'unsupported initialize result',
-        true,
-      );
-      return;
-    }
-    clearTimeout(run.timers.initialize);
     run.result = result;
     this.#armIdle(run);
-    void this.#write(run, { jsonrpc: '2.0', method: 'notifications/initialized' });
     for (const session of this.#sessions) {
       if (session.given !== undefined && !stillMatches(session.given, result)) {
         session.end('child changed');
@@ -513,6 +393,78 @@ export class GrantChild {
     this.#waiting = [];
     for (const entry of waiting) {
       this.#send(run, entry.session, entry.message);
+    }
+  }
+
+  #send(run: Run, session: GrantSession, message: JSONRPCRequest) {
+    const callerToken = requestProgressToken(message);
+    const entry: InFlight = {
+      callerId: message.id,
+      callerToken,
+      session,
+      upstreamId: this.#nextId(),
+      upstreamToken: undefined,
+    };
+    if (callerToken !== undefined) {
+      this.#lastToken += 1;
+      entry.upstreamToken = this.#lastToken;
+      this.#progress.set(entry.upstreamToken, entry);
+    }
+    this.#inFlight.set(entry.upstreamId, entry);
+    this.#armIdle(run);
+    run.upstream.request(renumbered(message, entry.upstreamId, entry.upstreamToken));
+  }
+
+  // The Upstream could not deliver a forwarded request: its Caller gets an
+  // error.
+  #requestFailed(id: number) {
+    const entry = this.#inFlight.get(id);
+    if (entry !== undefined) {
+      this.#forget(entry);
+      entry.session.deliver(errorResponse(entry.callerId, ERRORS.unreachable), { activity: true });
+    }
+  }
+
+  // Releases a request's Upstream-side id and token for routing.
+  #forget(entry: InFlight) {
+    this.#inFlight.delete(entry.upstreamId);
+    if (entry.upstreamToken !== undefined) {
+      this.#progress.delete(entry.upstreamToken);
+    }
+  }
+
+  // Keeps counting a request against the limit until the hold passes.
+  #hold(id: number) {
+    this.#held.set(
+      id,
+      setTimeout(() => this.#held.delete(id), this.#limits.cancelledHoldMs),
+    );
+  }
+
+  // Cancels a forwarded request on the Service. Its id and token are released
+  // at once, but it keeps counting against the limit until the Service answers
+  // it, the run stops, or the hold passes.
+  #cancelInFlight(entry: InFlight, notification: JSONRPCNotification | undefined) {
+    this.#forget(entry);
+    this.#hold(entry.upstreamId);
+    const run = this.#run;
+    if (run !== undefined && !run.stopping) {
+      this.#armIdle(run);
+      run.upstream.cancel(entry.upstreamId, notification?.params);
+    }
+  }
+
+  #fromUpstream(run: Run, message: JSONRPCMessage) {
+    if (run !== this.#run || run.stopping) {
+      return;
+    }
+    this.#armIdle(run);
+    if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
+      this.#response(message);
+    } else if (isJSONRPCRequest(message)) {
+      this.#serviceRequest(run, message);
+    } else if (isJSONRPCNotification(message)) {
+      this.#notification(message);
     }
   }
 
@@ -534,17 +486,18 @@ export class GrantChild {
     entry.session.deliver({ ...message, id: entry.callerId }, { activity: true });
   }
 
-  // Modgud answers a Child's requests itself: the Child sees no client
+  // Modgud answers a Service's requests itself: the Service sees no client
   // capabilities, so only `ping` gets a result.
-  #childRequest(run: Run, request: JSONRPCRequest) {
+  #serviceRequest(run: Run, request: JSONRPCRequest) {
+    this.#armIdle(run);
     if (request.method === 'ping') {
-      void this.#write(run, emptyResult(request.id));
+      run.upstream.answer(emptyResult(request.id));
       return;
     }
     this.#log.info(
       `${this.#label} asked for ${excerpt(request.method, 200)}, which Modgud does not offer.`,
     );
-    void this.#write(run, errorResponse(request.id, ERRORS.methodNotFound));
+    run.upstream.answer(errorResponse(request.id, ERRORS.methodNotFound));
   }
 
   #notification(message: JSONRPCNotification) {
@@ -582,8 +535,8 @@ export class GrantChild {
     }
   }
 
-  // Fails everything waiting for a Child: an `initialize` learns why, and a
-  // request on an open Session gets an error response.
+  // Fails everything waiting for the Service: an `initialize` learns why, and
+  // a request on an open Session gets an error response.
   #failWaiting(reason: Unavailable) {
     const readyWaiters = this.#readyWaiters;
     this.#readyWaiters = [];
@@ -599,45 +552,63 @@ export class GrantChild {
     }
   }
 
-  // Stops a Child once: it sends the Child nothing more, fails every request
-  // in flight, and stops the process, killing it 2 seconds after SIGTERM. A
-  // failure counts toward backoff and fails what waits for a Child that never
-  // started. Anything else that waits starts the next Child once this one has
-  // exited.
-  #stop(run: Run, reason: string, failure: boolean) {
+  // Stops a run for Modgud's own reason, once: it asks the Upstream to stop
+  // after settling what the run held.
+  #stop(run: Run, reason: StopReason) {
     if (run.stopping) {
       return;
     }
+    this.#settle(run, false);
+    run.upstream.stop(reason);
+    this.#detach(run);
+  }
+
+  // The Upstream stopped itself, or failed to start. It has already stopped
+  // whatever it ran.
+  #stoppedByUpstream(run: Run, failure: boolean) {
+    if (run.stopping) {
+      return;
+    }
+    this.#settle(run, failure);
+    this.#detach(run);
+  }
+
+  // Marks a run stopping once: it sends the Upstream nothing more and fails
+  // every request in flight. A failure counts toward backoff and fails what
+  // waits for a run that never started. Anything else that waits starts the
+  // next run once this one has stopped.
+  #settle(run: Run, failure: boolean) {
     run.stopping = true;
     clearTimeout(run.timers.idle);
-    clearTimeout(run.timers.initialize);
     clearTimeout(run.timers.reset);
-    this.#log.info(`${this.#label} stopped: ${reason}.`);
     if (failure) {
       this.#backoff.failed();
     }
+    const outlives = run.upstream.workOutlivesStop;
     for (const entry of this.#inFlight.values()) {
       this.#forget(entry);
       entry.session.deliver(errorResponse(entry.callerId, ERRORS.stopped), { activity: true });
+      if (outlives) {
+        this.#hold(entry.upstreamId);
+      }
     }
-    for (const timer of this.#held.values()) {
-      clearTimeout(timer);
+    if (!outlives) {
+      for (const timer of this.#held.values()) {
+        clearTimeout(timer);
+      }
+      this.#held.clear();
     }
-    this.#held.clear();
     if (run.result === undefined && (failure || this.#ended !== undefined)) {
       this.#failWaiting(this.#ended ?? 'failed');
     }
-    void run.process.stop();
   }
 
-  #exited(run: Run, status: ExitStatus) {
-    if (!run.stopping) {
-      this.#stop(run, describeExit(status), true);
-    }
-    if (this.#run === run) {
+  // An Upstream that restarts at once is replaced without waiting for its
+  // `stopped`.
+  #detach(run: Run) {
+    if (run.upstream.restartsAtOnce && this.#run === run) {
       this.#run = undefined;
+      this.#demand();
     }
-    run.exited.resolve();
-    this.#demand();
   }
 }

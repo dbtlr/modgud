@@ -8,7 +8,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 
 import { sha256Hex } from '../bearer.ts';
 import { parseConfig } from '../config.ts';
-import type { ChildLimits } from '../grant-child.ts';
+import type { GrantLimits } from '../grant-relay.ts';
 import type { Log } from '../log.ts';
 import { s256Challenge } from '../pkce.ts';
 import { createPublicListener } from '../public-listener.ts';
@@ -35,7 +35,7 @@ export type Running = {
 
 export type StartOptions = {
   authorizationSweepMs?: number;
-  childLimits?: Partial<ChildLimits>;
+  childLimits?: Partial<GrantLimits>;
   identityEnv?: string;
   // The Service's idle timeout, which stops its Children.
   idleMinutes?: number;

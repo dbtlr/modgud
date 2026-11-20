@@ -8,7 +8,7 @@ import {
 import type { JSONRPCMessage, RequestId } from '@modelcontextprotocol/server';
 
 import { boundStream } from './bounded-stream.ts';
-import type { GrantChild, GrantSession } from './grant-child.ts';
+import type { GrantRelay, GrantSession } from './grant-relay.ts';
 import { loggable } from './log.ts';
 import type { Log } from './log.ts';
 import {
@@ -39,7 +39,7 @@ export const STREAM_LIMIT_BYTES = 1024 * 1024;
 let activityClock = 0;
 
 export type SessionOptions = {
-  child: GrantChild;
+  child: GrantRelay;
   // The id of the Grant that opened the Session.
   grant: string;
   // How long the Session lasts with no activity.
@@ -61,7 +61,7 @@ export class Session implements GrantSession {
   readonly grant: string;
   readonly service: string;
 
-  readonly #child: GrantChild;
+  readonly #child: GrantRelay;
   readonly #http: WebStandardStreamableHTTPServerTransport;
   readonly #idleMs: number;
   readonly #log: Log;
