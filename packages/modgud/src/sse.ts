@@ -10,7 +10,9 @@ export async function* eventData(body: ReadableStream<Uint8Array>, maxBytes: num
   let skipLF = false;
   let bytes = 0;
   let line = '';
-  let data: string[] = [];
+  // The event's data lines so far, joined by LF as they arrive, so a stream
+  // of many short lines holds one string rather than one entry per line.
+  let data: string | undefined;
 
   for await (const chunk of body) {
     let offset = 0;
@@ -46,9 +48,9 @@ export async function* eventData(body: ReadableStream<Uint8Array>, maxBytes: num
       }
       firstLine = false;
       if (line.length === 0) {
-        const event = data.join('\n');
+        const event = data ?? '';
         bytes = 0;
-        data = [];
+        data = undefined;
         if (event.length !== 0) {
           yield event;
         }
@@ -57,10 +59,9 @@ export async function* eventData(body: ReadableStream<Uint8Array>, maxBytes: num
         if (bytes > maxBytes) {
           throw new Error('SSE event exceeds the limit');
         }
-        if (line === 'data') {
-          data.push('');
-        } else if (line.startsWith('data:')) {
-          data.push(line.slice(line.startsWith('data: ') ? 6 : 5));
+        if (line === 'data' || line.startsWith('data:')) {
+          const value = line.slice(line.startsWith('data: ') ? 6 : 5);
+          data = data === undefined ? value : `${data}\n${value}`;
         }
       }
       line = '';
