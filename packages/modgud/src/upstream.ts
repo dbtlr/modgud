@@ -45,16 +45,17 @@ export type UpstreamEvents = {
 
 export type Upstream = {
   // Whether GrantRelay may start the next run before this one's `stop` or
-  // self-stop has settled. A Child's successor waits for its exit; a Link's
-  // may start at once.
+  // self-stop has settled. A Child's successor waits for its process group to
+  // stop; a Link's may start at once.
   readonly restartsAtOnce: boolean;
   // Whether a forwarded request still in flight when this run stops keeps
   // counting against the Grant's request limit for the cancelled hold. A
   // stopped Child's work stops with it; a stopped Link's may still finish on
   // the Service.
   readonly workOutlivesStop: boolean;
-  // Settles once the run has fully stopped, however it stopped: a Child has
-  // exited, or a Link's last request to the Service has settled.
+  // Settles once the run has fully stopped, however it stopped: a Child's
+  // process group has stopped, or a Link's last request to the Service has
+  // settled.
   readonly stopped: Promise<void>;
   // Starts the run and completes Modgud's own `initialize` handshake within
   // the start deadline. Called once. After `stop`, it resolves as failed.

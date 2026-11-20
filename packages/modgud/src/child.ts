@@ -69,6 +69,9 @@ const asError = (error: unknown) => (error instanceof Error ? error : new Error(
 export class Child {
   readonly #options: ChildOptions;
   #process: Bun.Subprocess<'pipe', 'pipe', 'pipe'> | undefined;
+  // The one stop of the process group, once begun. A later stop() waits for it
+  // instead of signalling a group id the system may have reused.
+  #stopped: Promise<void> | undefined;
 
   constructor(options: ChildOptions) {
     this.#options = options;
@@ -182,12 +185,18 @@ export class Child {
 
   // Stops the process group: SIGTERM, then SIGKILL to whatever is left of it
   // once the grace period ends. It stops a group whose leader has already
-  // exited too, as when a wrapper left a process running.
-  async stop() {
+  // exited too, as when a wrapper left a process running. It resolves once the
+  // group is empty or has been sent SIGKILL, and the leader has exited.
+  stop() {
     const process = this.#process;
     if (process === undefined) {
-      return;
+      return Promise.resolve();
     }
+    this.#stopped ??= Child.#stopGroup(process);
+    return this.#stopped;
+  }
+
+  static async #stopGroup(process: Bun.Subprocess) {
     const groupId = process.pid;
     let running = signalGroup(groupId, 'SIGTERM');
     const deadline = Date.now() + STOP_GRACE_MS;

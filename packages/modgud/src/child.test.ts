@@ -101,3 +101,11 @@ test('a stderr line with no newline at exit is still reported', async () => {
   await waitFor(() => lines.length > 1);
   expect(lines).toEqual(['first', 'last']);
 });
+
+test('stopping a Child that exits on SIGTERM does not wait out the grace period', async () => {
+  const { child } = runScript('await Bun.sleep(60_000);');
+  await Bun.sleep(100);
+  const begun = Date.now();
+  await child.stop();
+  expect(Date.now() - begun).toBeLessThan(1000);
+});

@@ -53,7 +53,8 @@ class ChildUpstream implements Upstream {
   readonly #options: ChildUpstreamOptions;
   readonly #events: UpstreamEvents;
   readonly #process: Child;
-  readonly #exited = Promise.withResolvers<void>();
+  // Settles once the Child's process group has stopped, or it never started.
+  readonly #stoppedGroup = Promise.withResolvers<void>();
   readonly #started = Promise.withResolvers<StartResult>();
   readonly #initializeId: number;
   #initializeTimer: Timer | undefined;
@@ -69,7 +70,7 @@ class ChildUpstream implements Upstream {
   constructor(options: ChildUpstreamOptions, events: UpstreamEvents, nextId: () => number) {
     this.#options = options;
     this.#events = events;
-    this.stopped = this.#exited.promise;
+    this.stopped = this.#stoppedGroup.promise;
     const { args, command, cwd } = options.command;
     const { label, log } = options;
     this.#process = new Child({
@@ -77,10 +78,7 @@ class ChildUpstream implements Upstream {
       command,
       cwd,
       environment: options.environment(),
-      onExit: (status) => {
-        this.#stopItself(describeExit(status));
-        this.#exited.resolve();
-      },
+      onExit: (status) => this.#stopItself(describeExit(status)),
       onFatal: (error) => {
         log.warn(`${label} unreadable output: ${loggable(error.message)}`);
         this.#stopItself('unreadable output');
@@ -110,7 +108,7 @@ class ChildUpstream implements Upstream {
     } catch (error) {
       log.warn(`${label} could not start: ${loggable(String(error))}`);
       this.#stopping = true;
-      this.#exited.resolve();
+      this.#stoppedGroup.resolve();
       return Promise.resolve({ kind: 'failed', reason: 'could not start' });
     }
     log.info(`${label} started, pid ${String(this.#process.pid)}.`);
@@ -138,7 +136,8 @@ class ChildUpstream implements Upstream {
     });
   }
 
-  // Stops the Child for GrantRelay's reason: SIGTERM, then SIGKILL.
+  // Stops the Child's process group for GrantRelay's reason: SIGTERM, then
+  // SIGKILL. `stopped` settles once the group has stopped.
   stop(reason: StopReason) {
     this.#halt(reason);
   }
@@ -180,7 +179,12 @@ class ChildUpstream implements Upstream {
     if (!this.#initialized) {
       this.#started.resolve({ kind: 'failed', reason });
     }
-    void this.#process.stop();
+    void this.#stopProcess();
+  }
+
+  async #stopProcess() {
+    await this.#process.stop();
+    this.#stoppedGroup.resolve();
   }
 
   // The Child failed or exited by itself: GrantRelay learns of it through
