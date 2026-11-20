@@ -543,7 +543,8 @@ describe('an HTTP Service, through its Link', () => {
       expect(initializes(stub.requests)).toBe(1);
 
       await waitFor(() => lines.includes('stub link for static-token stopped: idle.'));
-      expect(stub.requests.at(-1)?.method).toBe('DELETE');
+      // The DELETE reaches the stub a moment after the Link logs its stop.
+      await waitFor(() => stub.requests.at(-1)?.method === 'DELETE');
 
       expect(firstText(await client.callTool({ arguments: { text: 'again' }, name: 'echo' }))).toBe(
         'again',

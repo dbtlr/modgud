@@ -676,6 +676,8 @@ test('shutdown aborts requests at once and waits for auxiliaries only to their d
   await eventually(() => closed.has('request'));
   expect(await Promise.race([link.stopped, Bun.sleep(100).then(() => 'waiting')])).toBe('waiting');
   await link.stopped;
+  // The stub learns of each abort a moment after the Link has made it.
+  await eventually(() => closed.size === 3);
   expect(performance.now() - stopping).toBeLessThan(1000);
   expect(closed).toEqual(new Set(['request', 'cancellation', 'answer']));
   expect(requests.map(httpMethod)).toContain('notifications/cancelled');
