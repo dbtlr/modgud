@@ -1,8 +1,8 @@
 // The Upstream for a process Service (ADR-0002): one Child from its spawn
-// until it has exited. It completes Modgud's own `initialize` handshake,
-// writes and reads the Child's messages, logs what the Child reports on
-// stderr, and stops the process. Everything a Grant keeps across Children
-// stays in GrantRelay.
+// until its process group has stopped. It completes Modgud's own `initialize`
+// handshake, writes and reads the Child's messages, logs what the Child
+// reports on stderr, and stops the process. Everything a Grant keeps across
+// Children stays in GrantRelay.
 import { isJSONRPCErrorResponse, isJSONRPCResultResponse } from '@modelcontextprotocol/server';
 import type {
   JSONRPCErrorResponse,

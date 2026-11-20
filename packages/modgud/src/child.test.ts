@@ -109,3 +109,12 @@ test('stopping a Child that exits on SIGTERM does not wait out the grace period'
   await child.stop();
   expect(Date.now() - begun).toBeLessThan(1000);
 });
+
+test('a second stop waits for the first instead of signalling the group again', async () => {
+  const { child } = runScript('await Bun.sleep(60_000);');
+  await Bun.sleep(100);
+  const first = child.stop();
+  expect(child.stop()).toBe(first);
+  await first;
+  expect(child.stop()).toBe(first);
+});

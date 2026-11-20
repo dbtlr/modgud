@@ -10,7 +10,7 @@ const STOP_GRACE_MS = 2000;
 // How often stop() checks whether a Child's process group has exited.
 const STOP_POLL_MS = 50;
 
-// Sends a signal to every process in a process group. Resolves to whether the
+// Sends a signal to every process in a process group. Returns whether the
 // group still had a process to receive it: only ESRCH means it had none.
 const signalGroup = (groupId: number, signal: NodeJS.Signals | 0) => {
   try {
