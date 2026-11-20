@@ -120,6 +120,8 @@ const proxied = await (async () => {
   });
   const listener = createPublicListener({
     config,
+    // The bench's Service is a process Service, which reads no bearer file.
+    home: storeDirectory,
     log: { info: () => undefined, warn: (line) => console.error(line) },
     parentEnvironment: process.env,
     store,

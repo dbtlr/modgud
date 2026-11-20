@@ -106,6 +106,7 @@ const start = async (fetchMetadataDocument?: FetchMetadataDocument): Promise<Run
     publicListener: createPublicListener({
       authorizationSweepMs: 50,
       config,
+      home: '/home/modgud-test',
       log,
       parentEnvironment: process.env,
       store,

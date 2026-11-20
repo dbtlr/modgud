@@ -13,7 +13,7 @@ const harness = createHarness();
 beforeEach(harness.setup);
 afterEach(harness.teardown);
 
-// Guards against GrantChild.cancel matching in-flight entries by caller id alone.
+// Guards against GrantRelay.cancel matching in-flight entries by caller id alone.
 test("a Session cannot cancel another Session's in-flight request by reusing its id", async () => {
   const { lines, url } = await harness.start();
   const owner = await openRawSession(url);
@@ -39,7 +39,7 @@ test("a Session cannot cancel another Session's in-flight request by reusing its
   void stream;
 });
 
-// Guards against GrantChild.cancel dropping waiting entries by caller id alone.
+// Guards against GrantRelay.cancel dropping waiting entries by caller id alone.
 test("a Session cannot drop another Session's waiting request by reusing its id", async () => {
   const { lines, listener, url } = await harness.start({
     idleMinutes: 0.005,

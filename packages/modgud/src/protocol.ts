@@ -11,6 +11,8 @@ import type {
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
+import packageMetadata from '../package.json';
+
 // The 2025-era revisions Modgud serves to Callers and accepts from a Child,
 // newest first. A later request whose `MCP-Protocol-Version` header names any
 // other version gets HTTP 400.
@@ -18,6 +20,21 @@ export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03
 
 // The version Modgud asks a Child for in its own `initialize`.
 export const CHILD_PROTOCOL_VERSION = '2025-11-25';
+
+// Who Modgud says it is in its own `initialize`.
+export const MODGUD_INFO = { name: 'modgud', version: packageMetadata.version };
+
+// Modgud's own `initialize` request to a Child or an HTTP Service.
+export const initializeRequest = (id: number): JSONRPCRequest => ({
+  id,
+  jsonrpc: '2.0',
+  method: 'initialize',
+  params: {
+    capabilities: {},
+    clientInfo: MODGUD_INFO,
+    protocolVersion: CHILD_PROTOCOL_VERSION,
+  },
+});
 
 const isSupported = (version: string) => SUPPORTED_PROTOCOL_VERSIONS.includes(version);
 

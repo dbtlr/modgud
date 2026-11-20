@@ -61,6 +61,7 @@ beforeEach(async () => {
   });
   listener = createPublicListener({
     config,
+    home: '/home/modgud-test',
     log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
     now: () => clock,
     parentEnvironment: {},
@@ -409,6 +410,7 @@ describe('dynamic client registration', () => {
     });
     const fullListener = createPublicListener({
       config,
+      home: '/home/modgud-test',
       log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
       now: () => clock,
       parentEnvironment: {},
@@ -461,6 +463,7 @@ describe('dynamic client registration', () => {
     };
     const broken = createPublicListener({
       config,
+      home: '/home/modgud-test',
       log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
       now: () => clock,
       parentEnvironment: {},
