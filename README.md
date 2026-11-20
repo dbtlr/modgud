@@ -70,8 +70,9 @@ A Service is a process Service, configured with `command` as above, or an HTTP S
 # The Service's MCP endpoint: an http URL to 127.0.0.1 or [::1], with no
 # userinfo, query, or fragment. A host name such as localhost is refused.
 url = "http://127.0.0.1:28472/mcp"
-# The file that holds the bearer Modgud sends, read each time Modgud connects,
-# so it need not exist when Modgud starts. Absolute, or starting with ~/.
+# The file that holds the bearer Modgud sends, read each time Modgud starts a
+# Link to the Service, so it need not exist when Modgud starts. Absolute, or
+# starting with ~/; a regular file of at most 64 KiB.
 bearer_file = "~/.config/norn/tokens.toml"
 # Optional. A dotted path to the secret when the file is TOML; without it, the
 # secret is the whole file, without surrounding whitespace. Either way, it is

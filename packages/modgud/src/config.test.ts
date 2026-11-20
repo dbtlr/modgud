@@ -361,6 +361,7 @@ describe('an HTTP Service', () => {
       'http://norn.example.com/mcp',
       'http://user@127.0.0.1/mcp',
       'http://user:secret@127.0.0.1/mcp',
+      'http://:secret@127.0.0.1/mcp',
       'http://127.0.0.1/mcp?token=1',
       'http://127.0.0.1/mcp?',
       'http://127.0.0.1/mcp#top',
