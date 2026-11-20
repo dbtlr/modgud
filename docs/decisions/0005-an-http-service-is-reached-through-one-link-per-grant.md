@@ -81,3 +81,4 @@ The behaviors in the Context are Norn's stated contract. Modgud is checked again
 ## Changelog
 
 - 2026-11-20: Proposed. It becomes accepted as the code it governs lands.
+- 2026-11-20: Links implemented (MDG-27), sharing one per-Grant core with Children. The tool list fetch and its maximum age land with Phase 2's Selector enforcement.
