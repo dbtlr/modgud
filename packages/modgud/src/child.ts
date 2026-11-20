@@ -30,9 +30,9 @@ const signalGroup = (groupId: number, signal: NodeJS.Signals | 0) => {
 // Waits up to `ms` for a process group to have no process left. Resolves to
 // whether it still has one.
 const waitForEmptyGroup = async (groupId: number, ms: number) => {
-  const deadline = Date.now() + ms;
+  const deadline = performance.now() + ms;
   let running = signalGroup(groupId, 0);
-  while (running && Date.now() < deadline) {
+  while (running && performance.now() < deadline) {
     // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
     await Bun.sleep(STOP_POLL_MS);
     running = signalGroup(groupId, 0);
