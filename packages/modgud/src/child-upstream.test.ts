@@ -1,4 +1,4 @@
-import { afterEach, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 
 import { createChildUpstream } from './child-upstream.ts';
 import { waitFor } from './testing/listener-harness.ts';
@@ -48,6 +48,5 @@ test('stopped waits until the process a wrapped Child started is gone', async ()
 
   upstream.stop('shutdown');
   await upstream.stopped;
-  // Only the init process's reaping is left to wait for.
-  await waitFor(() => !isRunning(pid), 500);
+  expect(isRunning(pid)).toBe(false);
 }, 10_000);

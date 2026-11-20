@@ -63,7 +63,7 @@ test('stopping a wrapped Child stops the process it started that ignores SIGTERM
   const { child, pid } = await runWrapper(`${STUBBORN} wait`);
   expect(isRunning(pid)).toBe(true);
   await child.stop();
-  await waitFor(() => !isRunning(pid), 1000);
+  expect(isRunning(pid)).toBe(false);
 }, 10_000);
 
 test('stopping a Child whose wrapper already exited stops the process it left behind', async () => {
@@ -71,7 +71,7 @@ test('stopping a Child whose wrapper already exited stops the process it left be
   await exited;
   expect(isRunning(pid)).toBe(true);
   await child.stop();
-  await waitFor(() => !isRunning(pid), 1000);
+  expect(isRunning(pid)).toBe(false);
 }, 10_000);
 
 test('a stderr line past 2000 code points is reported at once, cut, and its rest dropped', async () => {

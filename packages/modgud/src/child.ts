@@ -7,6 +7,12 @@ import { CHILD_LOG_LIMIT } from './log.ts';
 // killed.
 const STOP_GRACE_MS = 2000;
 
+// How long stop() waits for a Child's process group to be gone after SIGKILL.
+// A killed process lingers until its parent reaps it, or longer while it is in
+// uninterruptible sleep; the bound keeps one such process from holding up
+// shutdown.
+const KILL_WAIT_MS = 1000;
+
 // How often stop() checks whether a Child's process group has exited.
 const STOP_POLL_MS = 50;
 
@@ -19,6 +25,19 @@ const signalGroup = (groupId: number, signal: NodeJS.Signals | 0) => {
   } catch (error) {
     return !(error instanceof Error && 'code' in error && error.code === 'ESRCH');
   }
+};
+
+// Waits up to `ms` for a process group to have no process left. Resolves to
+// whether it still has one.
+const waitForEmptyGroup = async (groupId: number, ms: number) => {
+  const deadline = Date.now() + ms;
+  let running = signalGroup(groupId, 0);
+  while (running && Date.now() < deadline) {
+    // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
+    await Bun.sleep(STOP_POLL_MS);
+    running = signalGroup(groupId, 0);
+  }
+  return running;
 };
 
 // The first `limit` code points of `text`, and how many that is. It reads no
@@ -186,7 +205,8 @@ export class Child {
   // Stops the process group: SIGTERM, then SIGKILL to whatever is left of it
   // once the grace period ends. It stops a group whose leader has already
   // exited too, as when a wrapper left a process running. It resolves once the
-  // group is empty or has been sent SIGKILL, and the leader has exited.
+  // leader has exited and the group is empty, or KILL_WAIT_MS after SIGKILL
+  // with whatever the kernel has not yet removed.
   stop() {
     const process = this.#process;
     if (process === undefined) {
@@ -198,15 +218,9 @@ export class Child {
 
   static async #stopGroup(process: Bun.Subprocess) {
     const groupId = process.pid;
-    let running = signalGroup(groupId, 'SIGTERM');
-    const deadline = Date.now() + STOP_GRACE_MS;
-    while (running && Date.now() < deadline) {
-      // oxlint-disable-next-line no-await-in-loop -- polling waits on purpose
-      await Bun.sleep(STOP_POLL_MS);
-      running = signalGroup(groupId, 0);
-    }
-    if (running) {
+    if (signalGroup(groupId, 'SIGTERM') && (await waitForEmptyGroup(groupId, STOP_GRACE_MS))) {
       signalGroup(groupId, 'SIGKILL');
+      await waitForEmptyGroup(groupId, KILL_WAIT_MS);
     }
     await process.exited;
   }
