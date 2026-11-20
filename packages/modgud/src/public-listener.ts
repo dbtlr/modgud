@@ -8,7 +8,7 @@ import { bearerToken, matchesTokenHash } from './bearer.ts';
 import { childEnvironment } from './child-environment.ts';
 import { clientLabel } from './client-metadata.ts';
 import { serviceResource } from './config.ts';
-import type { Config, ServiceConfig } from './config.ts';
+import type { Config, ProcessServiceConfig } from './config.ts';
 import { CHILD_LIMITS, GrantChild } from './grant-child.ts';
 import type { ChildLimits } from './grant-child.ts';
 import { answerUnexpectedError } from './http.ts';
@@ -148,7 +148,7 @@ export const createPublicListener = ({
 
   // The Grant's shared Child, created on first use. It starts no process
   // until a request needs one.
-  const childFor = (serviceName: string, service: ServiceConfig, grant: Grant) => {
+  const childFor = (serviceName: string, service: ProcessServiceConfig, grant: Grant) => {
     const key = childKey(serviceName, grant.id);
     let child = children.get(key);
     if (child === undefined) {
@@ -296,6 +296,14 @@ export const createPublicListener = ({
     const service = config.services[serviceName];
     if (service === undefined) {
       return notFound();
+    }
+    // Until Links are served, an HTTP Service fails as a Link start that
+    // failed would (ADR-0005).
+    if (service.kind === 'http') {
+      log.warn(
+        `Refused a ${serviceName} session for ${caller}: ${serviceName} is an HTTP Service, which this version of Modgud does not serve yet.`,
+      );
+      return notStarted();
     }
     const child = childFor(serviceName, service, grant);
     const session = new Session({

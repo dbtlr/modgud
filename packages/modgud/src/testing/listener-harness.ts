@@ -41,6 +41,8 @@ export type StartOptions = {
   idleMinutes?: number;
   // The Service's command, in place of the stub, such as one that does not exist.
   command?: string;
+  // Serves both Services as HTTP Services at this url, in place of the stub.
+  httpServiceUrl?: string;
   // An argument the stub gets, so a test can find its processes.
   marker?: string;
   maxSessionsPerGrant?: number;
@@ -98,6 +100,7 @@ export const createHarness = () => {
     authorizationSweepMs,
     childLimits,
     command = process.execPath,
+    httpServiceUrl,
     identityEnv,
     idleMinutes = 30,
     marker = '',
@@ -109,10 +112,17 @@ export const createHarness = () => {
     stubEnv = {},
     wrapStore = (store: Store) => store,
   }: StartOptions = {}): Promise<Running> => {
-    const stub = `
+    const stub =
+      httpServiceUrl === undefined
+        ? `
       command = ${JSON.stringify(command)}
       args = ${JSON.stringify([STUB, ...(marker === '' ? [] : [marker])])}
       env = ${tomlTable({ STUB_MODE: '', STUB_SETTING: 'configured', ...stubEnv })}
+      idle_timeout_minutes = ${String(idleMinutes)}
+    `
+        : `
+      url = ${JSON.stringify(httpServiceUrl)}
+      bearer_file = "/nonexistent/modgud-test-token"
       idle_timeout_minutes = ${String(idleMinutes)}
     `;
     const config = parseConfig(`

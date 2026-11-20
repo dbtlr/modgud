@@ -370,6 +370,31 @@ describe('ending a Session', () => {
   }, 10_000);
 });
 
+describe('an HTTP Service, before Links are served', () => {
+  test('an initialize gets 502 and starts no Child, and the refusal is logged', async () => {
+    const { lines, listener, url } = await start({ httpServiceUrl: 'http://127.0.0.1:9/mcp' });
+    const spawn = spyOn(Bun, 'spawn');
+
+    try {
+      const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({
+        error: { code: -32_603, message: 'The Service could not be started' },
+        id: null,
+        jsonrpc: '2.0',
+      });
+      expect(listener.sessionCount()).toBe(0);
+      expect(spawn).not.toHaveBeenCalled();
+      expect(lines).toContainEqual(
+        'Refused a stub session for the static bearer token: stub is an HTTP Service, which this version of Modgud does not serve yet.',
+      );
+    } finally {
+      spawn.mockRestore();
+    }
+  });
+});
+
 describe('refusals', () => {
   test("a request without a token gets 401 naming the Service's protected-resource metadata", async () => {
     const { listener, url } = await start();
