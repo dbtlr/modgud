@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import type { PublicListener } from './public-listener.ts';
 import {
@@ -8,13 +10,18 @@ import {
   DAY,
   firstText,
   isAlive,
+  openRawSession,
   post,
   rejectionOf,
+  requestOn,
   processesWith,
   PUBLIC,
+  toolCall,
   TOKEN,
   waitFor,
 } from './testing/listener-harness.ts';
+import { httpMethod, startStubHttpService } from './testing/stub-http-service.ts';
+import type { StubHttpRequest } from './testing/stub-http-service.ts';
 
 const harness = createHarness();
 const { openTestStore, start } = harness;
@@ -370,27 +377,107 @@ describe('ending a Session', () => {
   }, 10_000);
 });
 
-describe('an HTTP Service, before Links are served', () => {
-  test('an initialize gets 502 and starts no Child, and the refusal is logged', async () => {
-    const { lines, listener, url } = await start({ httpServiceUrl: 'http://127.0.0.1:9/mcp' });
-    const spawn = spyOn(Bun, 'spawn');
+// How many initialize requests the stub HTTP Service has received.
+const initializes = (requests: StubHttpRequest[]) =>
+  requests.filter((request) => httpMethod(request) === 'initialize').length;
 
+describe('an HTTP Service, through its Link', () => {
+  const LINK_SECRET = 'link-secret';
+  const SERVICE_SESSION = 'service-session';
+
+  // Starts a stub HTTP Service and a listener serving it, with the bearer in
+  // a file under the harness's directory.
+  const startLinked = async (options: { bearer?: string; idleMinutes?: number } = {}) => {
+    const stub = startStubHttpService({ sessionId: SERVICE_SESSION });
+    const bearerFile = join(harness.directory, 'service-token');
+    if (options.bearer !== undefined) {
+      await writeFile(bearerFile, options.bearer);
+    }
+    const instance = await start({
+      httpServiceBearerFile: bearerFile,
+      httpServiceUrl: stub.url,
+      ...(options.idleMinutes === undefined ? {} : { idleMinutes: options.idleMinutes }),
+    });
+    return { ...instance, bearerFile, stub };
+  };
+
+  test('a Caller initializes, lists tools, and calls the Service tool through Modgud', async () => {
+    const { stub, url } = await startLinked({ bearer: LINK_SECRET });
+    try {
+      const { client } = await connect(url);
+
+      const { tools } = await client.listTools();
+      expect(tools.map((tool) => tool.name)).toEqual(['echo']);
+      expect(firstText(await client.callTool({ arguments: { text: 'hello' }, name: 'echo' }))).toBe(
+        'hello',
+      );
+    } finally {
+      await stub.server.stop(true);
+    }
+  });
+
+  test('the Service sees the bearer from its file and none of the Caller headers', async () => {
+    const { stub, url } = await startLinked({ bearer: ` ${LINK_SECRET}\n` });
+    try {
+      const { headers } = await openRawSession(url, {});
+      const { messages } = await requestOn(
+        url,
+        { ...headers, 'X-Caller-Marker': 'caller-only' },
+        toolCall(2, 'echo', { text: 'hi' }),
+      );
+
+      expect(messages).toHaveLength(1);
+      expect(stub.requests.length).toBeGreaterThan(2);
+      for (const request of stub.requests) {
+        const received = Object.fromEntries(request.headers);
+        expect(received.authorization).toBe(`Bearer ${LINK_SECRET}`);
+        expect(received.origin).toBeUndefined();
+        expect(received['x-caller-marker']).toBeUndefined();
+        expect(JSON.stringify(request.headers)).not.toContain(TOKEN);
+        expect(received['mcp-session-id'] ?? SERVICE_SESSION).toBe(SERVICE_SESSION);
+      }
+    } finally {
+      await stub.server.stop(true);
+    }
+  });
+
+  test('a missing bearer file fails the initialize with 502, and the log names the Service and the file', async () => {
+    const { bearerFile, lines, listener, stub, url } = await startLinked();
     try {
       const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
 
       expect(response.status).toBe(502);
-      expect(await response.json()).toEqual({
-        error: { code: -32_603, message: 'The Service could not be started' },
-        id: null,
-        jsonrpc: '2.0',
-      });
       expect(listener.sessionCount()).toBe(0);
-      expect(spawn).not.toHaveBeenCalled();
-      expect(lines).toContainEqual(
-        'Refused a stub session for the static bearer token: stub is an HTTP Service, which this version of Modgud does not serve yet.',
+      expect(stub.requests).toEqual([]);
+      expect(
+        lines.some(
+          (line) => line.includes('stub link for static-token') && line.includes(bearerFile),
+        ),
+      ).toBe(true);
+      expect(lines.join('\n')).not.toContain(LINK_SECRET);
+    } finally {
+      await stub.server.stop(true);
+    }
+  });
+
+  test('an idle Link stops, and the next request starts a new Link that initializes again', async () => {
+    const { lines, stub, url } = await startLinked({ bearer: LINK_SECRET, idleMinutes: 0.005 });
+    try {
+      const { client } = await connect(url);
+      expect(initializes(stub.requests)).toBe(1);
+
+      await waitFor(() => lines.includes('stub link for static-token stopped: idle.'));
+      expect(stub.requests.at(-1)?.method).toBe('DELETE');
+
+      expect(firstText(await client.callTool({ arguments: { text: 'again' }, name: 'echo' }))).toBe(
+        'again',
+      );
+      expect(initializes(stub.requests)).toBe(2);
+      expect(lines.filter((line) => line === 'stub link for static-token started.')).toHaveLength(
+        2,
       );
     } finally {
-      spawn.mockRestore();
+      await stub.server.stop(true);
     }
   });
 });

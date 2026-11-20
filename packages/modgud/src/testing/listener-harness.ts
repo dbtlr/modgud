@@ -43,6 +43,8 @@ export type StartOptions = {
   command?: string;
   // Serves both Services as HTTP Services at this url, in place of the stub.
   httpServiceUrl?: string;
+  // The file that holds an HTTP Service's bearer, in place of one that does not exist.
+  httpServiceBearerFile?: string;
   // An argument the stub gets, so a test can find its processes.
   marker?: string;
   maxSessionsPerGrant?: number;
@@ -100,6 +102,7 @@ export const createHarness = () => {
     authorizationSweepMs,
     childLimits,
     command = process.execPath,
+    httpServiceBearerFile = '/nonexistent/modgud-test-token',
     httpServiceUrl,
     identityEnv,
     idleMinutes = 30,
@@ -122,7 +125,7 @@ export const createHarness = () => {
     `
         : `
       url = ${JSON.stringify(httpServiceUrl)}
-      bearer_file = "/nonexistent/modgud-test-token"
+      bearer_file = ${JSON.stringify(httpServiceBearerFile)}
       idle_timeout_minutes = ${String(idleMinutes)}
     `;
     const config = parseConfig(`
@@ -152,6 +155,7 @@ export const createHarness = () => {
     const store = await openTestStore();
     const listener = createPublicListener({
       config,
+      home: directory,
       log,
       parentEnvironment,
       store: wrapStore(store),

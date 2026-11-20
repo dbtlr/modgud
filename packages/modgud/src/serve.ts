@@ -81,6 +81,7 @@ export const serve = new Command('serve', {
     const store = await openConfiguredStore(config, host, { log, out });
     const publicListener = createPublicListener({
       config,
+      home: host.home,
       log,
       parentEnvironment: host.env,
       store,

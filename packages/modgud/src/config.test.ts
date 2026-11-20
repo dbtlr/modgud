@@ -437,12 +437,6 @@ describe('an HTTP Service', () => {
       );
     }
   });
-
-  test('warns that this version does not serve an HTTP Service yet, naming its path', () => {
-    expect(parseConfigWithWarnings(httpServiceWith()).warnings).toEqual([
-      'services.norn is an HTTP Service, which this version of Modgud does not serve yet: an initialize at /norn/mcp gets HTTP 502.',
-    ]);
-  });
 });
 
 describe('expandHome', () => {

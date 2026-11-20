@@ -275,24 +275,15 @@ const configSchema = z
       path: ['admin', 'port'],
     },
   )
-  // Drops the retired settings, with a warning for each one set, and warns of
-  // each HTTP Service, which the Public listener refuses until Links are
-  // served (ADR-0005).
+  // Drops the retired settings, with a warning for each one set.
   .transform(({ public: { max_sessions: retired, ...current }, ...config }) => ({
     config: { ...config, public: current },
-    warnings: [
-      ...(retired === undefined
+    warnings:
+      retired === undefined
         ? []
         : [
             `public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is ${String(current.max_sessions_per_grant)}.`,
-          ]),
-      ...Object.entries(config.services)
-        .filter(([, settings]) => settings.kind === 'http')
-        .map(
-          ([name]) =>
-            `services.${name} is an HTTP Service, which this version of Modgud does not serve yet: an initialize at /${name}/mcp gets HTTP 502.`,
-        ),
-    ],
+          ],
   }));
 
 export type Config = z.output<typeof configSchema>['config'];

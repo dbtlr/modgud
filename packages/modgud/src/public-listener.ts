@@ -9,11 +9,12 @@ import { childEnvironment } from './child-environment.ts';
 import { createChildUpstream } from './child-upstream.ts';
 import { clientLabel } from './client-metadata.ts';
 import { serviceResource } from './config.ts';
-import type { Config, ProcessServiceConfig } from './config.ts';
+import type { Config, ServiceConfig } from './config.ts';
 import { GRANT_LIMITS, GrantRelay } from './grant-relay.ts';
 import type { GrantLimits } from './grant-relay.ts';
 import { answerUnexpectedError } from './http.ts';
 import type { PeerAddress } from './http.ts';
+import { createLink } from './link.ts';
 import { excerpt, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { createOAuthEndpoints } from './oauth-endpoints.ts';
@@ -21,6 +22,7 @@ import { initializeAnswer } from './protocol.ts';
 import { Session } from './session.ts';
 import type { SessionEndHandler } from './session.ts';
 import type { Store } from './store.ts';
+import type { UpstreamEvents } from './upstream.ts';
 
 // The Grant a request's credential derives from: the one Service it covers,
 // and the Identity, if any, that its Children receive (ADR-0001). Its id names
@@ -61,8 +63,8 @@ const PROTOCOL_LOG_LIMIT = 64;
 
 const STATIC_TOKEN_CALLER = 'the static bearer token';
 
-// A Grant's shared Child, as a map key: one per Service and Grant.
-const childKey = (serviceName: string, grantId: string) => `${serviceName}\n${grantId}`;
+// A Grant's shared relay, as a map key: one per Service and Grant.
+const relayKey = (serviceName: string, grantId: string) => `${serviceName}\n${grantId}`;
 
 const SERVICE_PATH = /^\/([a-z][a-z0-9-]*)\/mcp$/u;
 
@@ -118,6 +120,7 @@ export const createPublicListener = ({
   authorizationSweepMs = AUTHORIZATION_SWEEP_MS,
   childLimits = {},
   config,
+  home,
   log,
   now = Date.now,
   parentEnvironment,
@@ -128,6 +131,8 @@ export const createPublicListener = ({
   // Shorter bounds on each Grant's Child, for tests.
   childLimits?: Partial<GrantLimits>;
   config: Config;
+  // What a leading `~/` in a Service's `bearer_file` expands to.
+  home: string;
   log: Log;
   // Milliseconds since the epoch, for the registration limits.
   now?: () => number;
@@ -138,41 +143,51 @@ export const createPublicListener = ({
   const limits: GrantLimits = { ...GRANT_LIMITS, ...childLimits };
   // Every open Session, by id.
   const sessions = new Map<string, Session>();
-  // Each Grant's shared Child, by Service and Grant id, from the Grant's
-  // first initialize until the Grant ends or Modgud shuts down.
-  const children = new Map<string, GrantRelay>();
-  // Children that ended for good, until they have exited.
+  // Each Grant's relay to its Service, a Child or a Link, by Service and Grant
+  // id, from the Grant's first initialize until the Grant ends or Modgud shuts
+  // down.
+  const relays = new Map<string, GrantRelay>();
+  // Relays that ended for good, until their Child has exited or their Link has
+  // settled.
   const ending = new Set<Promise<void>>();
   let closing = false;
   const allowedOrigins = new Set(config.public.allowed_origins.map((url) => new URL(url).origin));
   const sessionIdleMs = config.public.session_idle_timeout_minutes * 60_000;
 
-  // The Grant's shared Child, created on first use. It starts no process
-  // until a request needs one.
-  const childFor = (serviceName: string, service: ProcessServiceConfig, grant: Grant) => {
-    const key = childKey(serviceName, grant.id);
-    let child = children.get(key);
-    if (child === undefined) {
-      const label = `${serviceName} child for ${grantLabel(grant.id)}`;
-      child = new GrantRelay({
-        grant: grant.id,
-        idleTimeoutMs: service.idle_timeout_minutes * 60_000,
-        label,
-        limits,
-        log,
-        service: serviceName,
-        upstream: createChildUpstream({
+  // The Upstream factory for a Service's runs for one Grant: a Child for a
+  // process Service, a Link for an HTTP Service.
+  const upstreamFor = (service: ServiceConfig, grant: Grant, label: string) =>
+    service.kind === 'http'
+      ? (events: UpstreamEvents, nextId: () => number) =>
+          createLink({ events, home, label, log, nextId, service })
+      : createChildUpstream({
           command: service,
           environment: () =>
             childEnvironment({ identity: grant.identity, parent: parentEnvironment, service }),
           label,
           log,
           startTimeoutMs: limits.startTimeoutMs,
-        }),
+        });
+
+  // The Grant's shared relay, created on first use. It starts no Child or Link
+  // until a request needs one.
+  const relayFor = (serviceName: string, service: ServiceConfig, grant: Grant) => {
+    const key = relayKey(serviceName, grant.id);
+    let relay = relays.get(key);
+    if (relay === undefined) {
+      const label = `${serviceName} ${service.kind === 'http' ? 'link' : 'child'} for ${grantLabel(grant.id)}`;
+      relay = new GrantRelay({
+        grant: grant.id,
+        idleTimeoutMs: service.idle_timeout_minutes * 60_000,
+        label,
+        limits,
+        log,
+        service: serviceName,
+        upstream: upstreamFor(service, grant, label),
       });
-      children.set(key, child);
+      relays.set(key, relay);
     }
-    return child;
+    return relay;
   };
 
   const untilExited = async (exited: Promise<void>) => {
@@ -181,10 +196,10 @@ export const createPublicListener = ({
     ending.delete(exited);
   };
 
-  // Ends a Grant's Sessions and stops its Child for good.
-  const endChild = (child: GrantRelay, kind: 'grant ended' | 'shutdown') => {
-    children.delete(childKey(child.service, child.grant));
-    void untilExited(child.end(kind));
+  // Ends a Grant's Sessions and stops its Child or Link for good.
+  const endRelay = (relay: GrantRelay, kind: 'grant ended' | 'shutdown') => {
+    relays.delete(relayKey(relay.service, relay.grant));
+    void untilExited(relay.end(kind));
   };
 
   const ended: SessionEndHandler = (session, reason) => {
@@ -202,10 +217,10 @@ export const createPublicListener = ({
   // was revoked, expired, or is no longer for the harness Service, whether
   // or not it still has Sessions.
   const sweepAuthorizations = () => {
-    for (const child of children.values()) {
-      const authorizationId = authorizationOf(child.grant);
+    for (const relay of relays.values()) {
+      const authorizationId = authorizationOf(relay.grant);
       if (authorizationId !== undefined && !store.isAuthorizationActive(authorizationId)) {
-        endChild(child, 'grant ended');
+        endRelay(relay, 'grant ended');
       }
     }
   };
@@ -305,30 +320,22 @@ export const createPublicListener = ({
     if (service === undefined) {
       return notFound();
     }
-    // Until Links are served, an HTTP Service fails as a Link start that
-    // failed would (ADR-0005).
-    if (service.kind === 'http') {
-      log.warn(
-        `Refused a ${serviceName} session for ${caller}: ${serviceName} is an HTTP Service, which this version of Modgud does not serve yet.`,
-      );
-      return notStarted();
-    }
-    const child = childFor(serviceName, service, grant);
+    const relay = relayFor(serviceName, service, grant);
     const session = new Session({
-      child,
+      child: relay,
       grant: grant.id,
       idleMs: sessionIdleMs,
       log,
       onEnd: ended,
       service: serviceName,
     });
-    if (!child.admit(session, config.public.max_sessions_per_grant)) {
+    if (!relay.admit(session, config.public.max_sessions_per_grant)) {
       log.warn(
         `Refused a ${serviceName} session for ${caller}: ${String(config.public.max_sessions_per_grant)} are opening.`,
       );
       return jsonRpcError(503, -32_000, 'Too many sessions are opening', { 'Retry-After': '30' });
     }
-    const readiness = await child.ready();
+    const readiness = await relay.ready();
     if (readiness.kind !== 'ready' || session.ended) {
       session.end('not initialized');
       if (readiness.kind === 'grant ended') {
@@ -421,8 +428,8 @@ export const createPublicListener = ({
         clearInterval(timer);
       }
       closing = true;
-      for (const child of children.values()) {
-        endChild(child, 'shutdown');
+      for (const relay of relays.values()) {
+        endRelay(relay, 'shutdown');
       }
       await Promise.allSettled(ending);
     },

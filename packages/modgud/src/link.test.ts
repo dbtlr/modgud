@@ -43,6 +43,7 @@ const fixture = async (
   const failures: number[] = [];
   const stops: { reason: string; failure: boolean }[] = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   let nextId = 0;
   const options: LinkOptions = {
     events: {
@@ -51,8 +52,9 @@ const fixture = async (
       onStopped: (reason, failure) => stops.push({ failure, reason }),
     },
     home,
+    label: 'stub link for static-token',
     ...(limits === undefined ? {} : { limits }),
-    log: { info() {}, warn: (warning) => warnings.push(warning) },
+    log: { info: (line) => infos.push(line), warn: (warning) => warnings.push(warning) },
     nextId: () => ++nextId,
     service: {
       bearer_file: '~/token',
@@ -61,7 +63,6 @@ const fixture = async (
       tool_list_max_age_seconds: 60,
       url: stub.url,
     },
-    serviceName: 'stub',
   };
   const link: Upstream = createLink(options);
   cleanups.push(() => {
@@ -73,6 +74,7 @@ const fixture = async (
     bearerPath,
     failures,
     ids: () => nextId,
+    infos,
     link,
     messages,
     options,
@@ -184,7 +186,9 @@ test('logs the bearer failure category without the file contents', async () => {
   await writeFile(bearerPath, 'secret with spaces');
   expect(await link.start()).toMatchObject({ kind: 'failed' });
   expect(requests).toEqual([]);
-  expect(warnings).toEqual([expect.stringMatching(/stub.*token.*invalid secret/u)]);
+  expect(warnings).toEqual([
+    expect.stringMatching(/^stub link for static-token .*token.*invalid secret/u),
+  ]);
   expect(warnings.join('')).not.toContain('secret with spaces');
 });
 
@@ -371,7 +375,7 @@ test('bypasses proxy environment variables on every Link request', async () => {
     const link = createLink({
       service: ${JSON.stringify(options.service)},
       home: ${JSON.stringify(options.home)},
-      serviceName: 'stub',
+      label: 'stub link for static-token',
       log: { warn() {}, info() {} },
       events: { onMessage() {}, onRequestFailed() {}, onStopped() {} },
       nextId: () => 1,
@@ -707,4 +711,42 @@ test('bounds cancellations, answers and DELETE independently', async () => {
     expect.stringContaining('dropping answer'),
   ]);
   expect(stops).toEqual([]);
+});
+
+test('logs a start and a stop with its reason, never the bearer', async () => {
+  const { link, infos } = await fixture();
+  expect(await link.start()).toMatchObject({ kind: 'started' });
+  link.stop('idle');
+  await link.stopped;
+  expect(infos).toEqual([
+    'stub link for static-token started.',
+    'stub link for static-token stopped: idle.',
+  ]);
+  expect(infos.join('')).not.toContain('startup-token');
+});
+
+test('logs a failed start as a stop with its reason', async () => {
+  const { link, bearerPath, infos } = await fixture();
+  await writeFile(bearerPath, 'secret with spaces');
+  await link.start();
+  expect(infos).toHaveLength(1);
+  expect(infos[0]).toMatch(/^stub link for static-token stopped: bearer file .*token: .+\.$/u);
+  expect(infos[0]).not.toContain('secret with spaces');
+});
+
+test('logs a self-stop after a 401 without the Service text', async () => {
+  const { link, infos, stops } = await fixture({
+    respond: (request) =>
+      httpMethod(request) === undefined
+        ? new Response('echo of startup-token', { status: 401 })
+        : undefined,
+    sessionId: 'session',
+  });
+  expect(await link.start()).toMatchObject({ kind: 'started' });
+  link.answer(rpcResult('service-ping'));
+  await eventually(() => stops.length === 1);
+  expect(infos).toEqual([
+    'stub link for static-token started.',
+    'stub link for static-token stopped: Service refused the bearer.',
+  ]);
 });
