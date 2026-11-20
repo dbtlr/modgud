@@ -67,6 +67,7 @@ const fixture = async (
       bearer_file: '~/token',
       idle_timeout_minutes: 1,
       kind: 'http',
+      max_tool_calls_per_minute: 120,
       tool_list_max_age_seconds: 60,
       url: stub.url,
     },

@@ -34,6 +34,65 @@ describe('a sliding-window limit', () => {
   });
 });
 
+// The wait a plain list of every recorded time gives, for comparison.
+const referenceWait = (times: number[], limit: number, now: number, windowMs: number) => {
+  const recent = times.filter((time) => time > now - windowMs);
+  const oldestCounted = recent[recent.length - limit];
+  return oldestCounted === undefined ? 0 : oldestCounted + windowMs - now;
+};
+
+describe('a sliding-window limit over a long run', () => {
+  test('waits exactly as long as a plain list of recorded times says, as times leave the window', () => {
+    const limit = 5;
+    const clock = { now: 0 };
+    const window = createWindowLimit({ limit, now: () => clock.now, windowMs: 1000 });
+    const recorded: number[] = [];
+
+    // Steps of 1 to 97 ms, recording whenever the limit allows.
+    for (let step = 0; step < 5000; step += 1) {
+      clock.now += 1 + ((step * 37) % 97);
+      expect(window.wait('a')).toBe(referenceWait(recorded, limit, clock.now, 1000));
+      if (window.wait('a') === 0) {
+        window.record('a');
+        recorded.push(clock.now);
+      }
+    }
+  });
+
+  test('drops a time recorded after the clock stepped back once it leaves the window', () => {
+    const { clock, window } = limitAt(2);
+
+    clock.now = 1000;
+    window.record('a');
+    // A wall clock corrected backwards.
+    clock.now = 500;
+    window.record('a');
+    clock.now = 1600;
+
+    expect(window.wait('a')).toBe(0);
+  });
+
+  test('checks a full window of the highest limit without copying it each time', () => {
+    const limit = 6000;
+    const clock = { now: 0 };
+    const window = createWindowLimit({ limit, now: () => clock.now, windowMs: 60_000 });
+    for (let call = 0; call < limit; call += 1) {
+      clock.now = call;
+      window.record('grant');
+    }
+
+    // 20000 checks: about 4 s when each check rebuilds the 6000 times.
+    const started = performance.now();
+    for (let check = 0; check < 20_000; check += 1) {
+      clock.now = limit + check;
+      if (window.wait('grant') === 0) {
+        window.record('grant');
+      }
+    }
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
 describe('a registration source', () => {
   test('is an IPv4 address as given', () => {
     expect(sourceKey('203.0.113.7')).toBe('203.0.113.7');

@@ -190,6 +190,7 @@ export const createPublicListener = ({
         label,
         limits,
         log,
+        maxToolCallsPerMinute: service.max_tool_calls_per_minute,
         service: serviceName,
         upstream: upstreamFor(service, grant, label),
       });

@@ -32,6 +32,7 @@ import {
   stillMatches,
 } from './protocol.ts';
 import type { ChildInitializeResult, Given, ProgressToken } from './protocol.ts';
+import { ToolCallLimit, toolCallRefusal } from './tool-call-limit.ts';
 import type { StopReason, Upstream, UpstreamFactory } from './upstream.ts';
 
 // The bounds on a Grant's Service run and the requests it holds. Tests
@@ -116,6 +117,10 @@ export type GrantRelayOptions = {
   idleTimeoutMs: number;
   limits: GrantLimits;
   log: Log;
+  // The Service's max_tool_calls_per_minute (ADR-0006).
+  maxToolCallsPerMinute: number;
+  // The clock of the Grant's tool call window; tests move it.
+  now?: () => number;
   service: string;
   // Creates the Upstream for each run.
   upstream: UpstreamFactory;
@@ -128,6 +133,7 @@ export class GrantRelay {
   readonly #log: Log;
   readonly #limits: GrantLimits;
   readonly #backoff: Backoff;
+  readonly #toolCalls: ToolCallLimit;
   // Every Session of the Grant, those still opening included.
   readonly #sessions = new Set<GrantSession>();
   // Callers of `ready`, waiting for the Service to start.
@@ -158,6 +164,12 @@ export class GrantRelay {
       baseMs: options.limits.backoffBaseMs,
       maxMs: options.limits.backoffMaxMs,
       now: () => performance.now(),
+    });
+    this.#toolCalls = new ToolCallLimit({
+      label: options.label,
+      limit: options.maxToolCallsPerMinute,
+      log: options.log,
+      now: options.now ?? (() => performance.now()),
     });
   }
 
@@ -283,6 +295,7 @@ export class GrantRelay {
   async end(kind: 'grant ended' | 'shutdown'): Promise<void> {
     if (this.#ended === undefined) {
       this.#ended = kind;
+      this.#toolCalls.endEpisode();
       for (const session of this.#sessions) {
         session.end(kind === 'shutdown' ? 'shutdown' : 'authorization ended');
       }
@@ -401,7 +414,19 @@ export class GrantRelay {
     }
   }
 
+  // Hands a Caller request to the run's Upstream. A tools/call past the
+  // Grant's limit is answered with a tool error instead (ADR-0006).
   #send(run: Run, session: GrantSession, message: JSONRPCRequest) {
+    if (message.method === 'tools/call') {
+      const decision = this.#toolCalls.take();
+      if (decision.kind === 'refuse') {
+        session.deliver(
+          toolCallRefusal(message.id, this.#toolCalls.limit, decision.retryAfterSeconds),
+          { activity: true },
+        );
+        return;
+      }
+    }
     const callerToken = requestProgressToken(message);
     const entry: InFlight = {
       callerId: message.id,

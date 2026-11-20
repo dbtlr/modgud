@@ -400,6 +400,7 @@ describe('an HTTP Service, through its Link', () => {
       bearer?: string;
       childLimits?: Partial<GrantLimits>;
       idleMinutes?: number;
+      maxToolCallsPerMinute?: number;
       stub?: Parameters<typeof startStubHttpService>[0];
     } = {},
   ) => {
@@ -414,6 +415,9 @@ describe('an HTTP Service, through its Link', () => {
         httpServiceUrl: stub.url,
         ...(options.childLimits === undefined ? {} : { childLimits: options.childLimits }),
         ...(options.idleMinutes === undefined ? {} : { idleMinutes: options.idleMinutes }),
+        ...(options.maxToolCallsPerMinute === undefined
+          ? {}
+          : { maxToolCallsPerMinute: options.maxToolCallsPerMinute }),
       });
       return { ...instance, bearerFile, stub };
     } catch (error) {
@@ -432,6 +436,28 @@ describe('an HTTP Service, through its Link', () => {
       expect(tools.map((tool) => tool.name)).toEqual(['echo']);
       expect(firstText(await client.callTool({ arguments: { text: 'hello' }, name: 'echo' }))).toBe(
         'hello',
+      );
+    } finally {
+      await stub.server.stop(true);
+    }
+  });
+
+  test("refuses a call past the Service's tool call limit with a tool error, without sending it", async () => {
+    const { stub, url } = await startLinked({ bearer: LINK_SECRET, maxToolCallsPerMinute: 2 });
+    try {
+      const { client } = await connect(url);
+      const echo = async () => client.callTool({ arguments: { text: 'hello' }, name: 'echo' });
+
+      await echo();
+      await echo();
+      const refused = await echo();
+
+      expect(refused.isError).toBe(true);
+      expect(firstText(refused)).toMatch(
+        /^Rate limit reached: the limit is 2 tool calls per minute\. Try again in \d+ seconds?\.$/u,
+      );
+      expect(stub.requests.filter((request) => httpMethod(request) === 'tools/call')).toHaveLength(
+        2,
       );
     } finally {
       await stub.server.stop(true);

@@ -536,6 +536,27 @@ describe('Child messages', () => {
   });
 });
 
+describe('the tool call limit', () => {
+  test("refuses a Grant's call past its Service's limit with a tool error, and another Grant keeps its own count", async () => {
+    const { lines, store, url } = await start({ maxToolCallsPerMinute: 1 });
+    const { accessToken } = connectOAuthClient(store);
+    const first = await connect(url);
+    const oauth = await connect(url, { token: accessToken });
+
+    await callPid(first.client);
+    const refused = await first.client.callTool({ arguments: {}, name: 'pid' });
+
+    // The wait is 60 seconds, or 59 when over a second passed between calls.
+    expect(refused).toMatchObject({ isError: true });
+    expect(refused._meta?.['com.dbtlr.modgud/retryAfterSeconds']).toBeOneOf([59, 60]);
+    expect(firstText(refused)).toMatch(
+      /^Rate limit reached: the limit is 1 tool call per minute\. Try again in (59|60) seconds\.$/u,
+    );
+    expect(await callPid(oauth.client)).toMatch(/^\d+$/u);
+    expect(lines.filter((line) => line.includes('reached its limit'))).toHaveLength(1);
+  });
+});
+
 describe('the request limit', () => {
   test('refuses a request past the limit, and a cancelled request keeps its slot until the hold passes', async () => {
     const { lines, url } = await start({
