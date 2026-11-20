@@ -4,7 +4,7 @@ title: ADR-0002 - Each Grant shares one on-demand child process across its MCP S
 description: "Modgud runs at most one Child per Grant, started on demand and shared by every Session the Grant opens, and binds each Session to that Grant. A Session outlives its Child. The Child's environment comes only from the Service's configuration and a fixed base allowlist, and only the Grant sets the Identity variable, which is trusted only as far as the OS account that runs Modgud and the Service."
 status: proposed
 created: 2026-11-05
-modified: 2026-11-19
+modified: 2026-11-20
 ---
 
 # Each Grant shares one on-demand child process across its MCP Sessions, and the Grant's Identity enters through its environment
@@ -91,7 +91,7 @@ A Session's first request after its Child idled out pays the Child's startup, ab
 A Service must be willing to take its Identity from its environment. Mimir needs to accept an asserted user from the environment and run without a clone binding.
 A tool call that runs longer than its Service's idle timeout without any message in either direction is cut off when the Child stops.
 Groups and hints are trusted because the Service declares them: configuring a Service means trusting the Groups it declares under its Group key, the default or a configured `group_key` ([ADR-0001](0001-callers-reach-services-through-grants-modgud-is-its-own-oauth-server.md)). The configurable key lets Modgud read the Groups a third-party tool already declares in its own `_meta`. Assigning Groups in proxy configuration to a tool that declares none is out of scope for v1.
-HTTP upstream Services, with the Identity in `_meta`, are a future extension and not part of this decision.
+HTTP Services are settled in [ADR-0005](0005-an-http-service-is-reached-through-one-link-per-grant.md): a Grant's Link takes its Child's place under this decision's Sessions and Messages rules, and an HTTP Service receives no Identity in v1.
 
 ## Changelog
 
@@ -103,3 +103,4 @@ HTTP upstream Services, with the Identity in `_meta`, are a future extension and
 - 2026-11-09: Addendum. Bounded what Modgud holds for each Caller stream to 1 MiB not yet handed to the HTTP connection plus one message, and for a Child's stderr line to the 2000 code points a log line carries. This replaces the declared limitation that output buffered for a Caller was unbounded.
 - 2026-11-09: Addendum. Stated that the Public listener ends a connection that takes none of Modgud's output for 60 seconds once its socket buffers are full, which releases what the HTTP server held for a Caller that stops reading, and recorded that the operating system's send buffer for such a connection is outside Modgud's reach.
 - 2026-11-19: Addendum. Trusting a Service's Groups follows from configuring the Service, under the default Group key or a configured one, and a configured key lets Modgud read the Groups a third-party tool declares, under ADR-0001's Group schema.
+- 2026-11-20: Addendum. HTTP Services, which this decision left as a future extension, are settled in [ADR-0005](0005-an-http-service-is-reached-through-one-link-per-grant.md), which applies this decision's Sessions and Messages rules to a Grant's Link.
