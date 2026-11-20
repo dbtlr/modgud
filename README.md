@@ -63,6 +63,26 @@ idle_timeout_minutes = 30     # default; at most 10080 (one week); stops an idle
 # identity_env = "MIMIR_USER" # optional; reserved for the Grant's Identity
 ```
 
+A Service is a process Service, configured with `command` as above, or an HTTP Service, configured with `url` instead: an MCP server that already serves Streamable HTTP on this host behind a bearer token, such as `norn serve`. A Service sets exactly one of the two. An HTTP Service takes none of `args`, `cwd`, `env`, or `identity_env`, and receives no Identity:
+
+```toml
+[services.norn]
+# The Service's MCP endpoint: an http URL to 127.0.0.1 or [::1], with no
+# userinfo, query, or fragment. A host name such as localhost is refused.
+url = "http://127.0.0.1:28472/mcp"
+# The file that holds the bearer Modgud sends, read each time Modgud connects,
+# so it need not exist when Modgud starts. Absolute, or starting with ~/.
+bearer_file = "~/.config/norn/tokens.toml"
+# Optional. A dotted path to the secret when the file is TOML; without it, the
+# secret is the whole file, without surrounding whitespace. Either way, it is
+# visible ASCII with no spaces.
+bearer_key = "tokens.default.secret"
+tool_list_max_age_seconds = 60  # default; 1 to 3600
+idle_timeout_minutes = 30       # default; at most 10080 (one week)
+```
+
+This version of Modgud validates an HTTP Service but does not serve it yet: `modgud serve` warns at startup, and an `initialize` at its path gets HTTP 502. [ADR-0005](docs/decisions/0005-an-http-service-is-reached-through-one-link-per-grant.md) settles how Modgud reaches one.
+
 To make a token and its hash:
 
 ```sh

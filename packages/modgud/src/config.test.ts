@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { parseConfig, parseConfigWithWarnings, resolveStorePath } from './config.ts';
+import { expandHome, parseConfig, parseConfigWithWarnings, resolveStorePath } from './config.ts';
 
 const HASH = 'a'.repeat(64);
 
@@ -26,6 +26,23 @@ const configWith = (overrides: Record<string, string> = {}) => {
           .join('\n')}`,
     )
     .join('\n\n');
+};
+
+const NORN_URL = 'http://127.0.0.1:28472/mcp';
+
+// A configuration whose `norn` Service is an HTTP Service. Each entry of
+// `settings` is a `key = value` TOML line of its table; an undefined value
+// leaves that key out.
+const httpServiceWith = (settings: Record<string, string | undefined> = {}) => {
+  const table = Object.entries({
+    bearer_file: '"~/.config/norn/tokens.toml"',
+    url: `"${NORN_URL}"`,
+    ...settings,
+  })
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key} = ${value}`)
+    .join('\n');
+  return configWith().replace('[services.norn]\ncommand = "norn"', `[services.norn]\n${table}`);
 };
 
 describe('parseConfig', () => {
@@ -65,6 +82,7 @@ describe('parseConfig', () => {
       command: 'norn',
       env: {},
       idle_timeout_minutes: 30,
+      kind: 'process',
     });
   });
 
@@ -276,6 +294,162 @@ describe('parseConfig', () => {
     for (const path of ['', 'modgud.sqlite', '~other/modgud.sqlite']) {
       expect(() => parseConfig(configWith({ 'store.path': `"${path}"` }))).toThrow(/store\.path/u);
     }
+  });
+});
+
+describe('an HTTP Service', () => {
+  test('is a Service with a url, filled with its defaults', () => {
+    expect(parseConfig(httpServiceWith()).services.norn).toEqual({
+      bearer_file: '~/.config/norn/tokens.toml',
+      idle_timeout_minutes: 30,
+      kind: 'http',
+      tool_list_max_age_seconds: 60,
+      url: NORN_URL,
+    });
+  });
+
+  test('keeps a bearer_key and the configured timeouts', () => {
+    const service = parseConfig(
+      httpServiceWith({
+        bearer_key: '"tokens.default.secret"',
+        idle_timeout_minutes: '5',
+        tool_list_max_age_seconds: '3600',
+      }),
+    ).services.norn;
+    expect(service).toMatchObject({
+      bearer_key: 'tokens.default.secret',
+      idle_timeout_minutes: 5,
+      tool_list_max_age_seconds: 3600,
+    });
+  });
+
+  test('refuses a Service with both command and url, naming the setting', () => {
+    expect(() => parseConfig(httpServiceWith({ command: '"norn"' }))).toThrow(
+      /command or url, not both[\s\S]*services\.norn\.url/u,
+    );
+  });
+
+  test('refuses a Service with neither command nor url, naming the setting', () => {
+    expect(() => parseConfig(httpServiceWith({ bearer_file: undefined, url: undefined }))).toThrow(
+      /services\.norn\.command/u,
+    );
+  });
+
+  test('accepts a loopback url in any form the URL parser normalizes, and keeps it normalized', () => {
+    for (const [url, normalized] of [
+      ['http://127.0.0.1/', 'http://127.0.0.1/'],
+      ['http://127.0.0.1', 'http://127.0.0.1/'],
+      ['http://127.1:28472/mcp', 'http://127.0.0.1:28472/mcp'],
+      ['http://0x7f000001:28472/mcp', 'http://127.0.0.1:28472/mcp'],
+      ['http://[::1]:28472/mcp', 'http://[::1]:28472/mcp'],
+      ['http://[0:0:0:0:0:0:0:1]/mcp', 'http://[::1]/mcp'],
+      ['HTTP://127.0.0.1:80/mcp', 'http://127.0.0.1/mcp'],
+    ] as const) {
+      const service = parseConfig(httpServiceWith({ url: `"${url}"` })).services.norn;
+      expect(service).toMatchObject({ url: normalized });
+    }
+  });
+
+  test('refuses a url that is not a loopback http URL without userinfo, query, or fragment', () => {
+    for (const url of [
+      'https://127.0.0.1/mcp',
+      'http://localhost/mcp',
+      'http://[::ffff:127.0.0.1]/mcp',
+      'http://127.0.0.2/mcp',
+      'http://0.0.0.0/mcp',
+      'http://[::]/mcp',
+      'http://norn.example.com/mcp',
+      'http://user@127.0.0.1/mcp',
+      'http://user:secret@127.0.0.1/mcp',
+      'http://127.0.0.1/mcp?token=1',
+      'http://127.0.0.1/mcp?',
+      'http://127.0.0.1/mcp#top',
+      'http://127.0.0.1/mcp#',
+      '127.0.0.1:28472/mcp',
+      '',
+    ]) {
+      expect(() => parseConfig(httpServiceWith({ url: `"${url}"` }))).toThrow(
+        /services\.norn\.url/u,
+      );
+    }
+  });
+
+  test('requires a bearer_file that is absolute or under ~/, naming the setting', () => {
+    expect(() => parseConfig(httpServiceWith({ bearer_file: undefined }))).toThrow(
+      /services\.norn\.bearer_file/u,
+    );
+    for (const path of ['', 'tokens.toml', '~other/tokens.toml']) {
+      expect(() => parseConfig(httpServiceWith({ bearer_file: `"${path}"` }))).toThrow(
+        /services\.norn\.bearer_file/u,
+      );
+    }
+    const service = parseConfig(httpServiceWith({ bearer_file: '"/etc/norn/token"' })).services
+      .norn;
+    expect(service).toMatchObject({ bearer_file: '/etc/norn/token' });
+  });
+
+  test('refuses a bearer_key that is not a dotted path of non-empty keys, naming the setting', () => {
+    for (const key of ['', '.', 'tokens.', '.secret', 'tokens..secret']) {
+      expect(() => parseConfig(httpServiceWith({ bearer_key: `"${key}"` }))).toThrow(
+        /services\.norn\.bearer_key/u,
+      );
+    }
+  });
+
+  test('refuses a tool list maximum age outside 1 to 3600 whole seconds, naming the setting', () => {
+    for (const seconds of ['0', '3601', '1.5']) {
+      expect(() => parseConfig(httpServiceWith({ tool_list_max_age_seconds: seconds }))).toThrow(
+        /services\.norn\.tool_list_max_age_seconds/u,
+      );
+    }
+    const service = parseConfig(httpServiceWith({ tool_list_max_age_seconds: '1' })).services.norn;
+    expect(service).toMatchObject({ tool_list_max_age_seconds: 1 });
+  });
+
+  test('refuses an idle timeout longer than one week, as for a process Service', () => {
+    expect(() => parseConfig(httpServiceWith({ idle_timeout_minutes: '10081' }))).toThrow(
+      /services\.norn\.idle_timeout_minutes/u,
+    );
+  });
+
+  test("refuses a process Service's settings, naming each one", () => {
+    for (const [key, value] of [
+      ['args', '["mcp"]'],
+      ['cwd', '"/srv/norn"'],
+      ['env', '{ NORN_ROOT = "/srv/norn" }'],
+      ['identity_env', '"MIMIR_USER"'],
+    ] as const) {
+      expect(() => parseConfig(httpServiceWith({ [key]: value }))).toThrow(
+        new RegExp(`HTTP Service takes no ${key}[\\s\\S]*services\\.norn\\.${key}`, 'u'),
+      );
+    }
+  });
+
+  test("refuses an HTTP Service's settings on a process Service, naming each one", () => {
+    for (const [key, value] of [
+      ['bearer_file', '"/etc/norn/token"'],
+      ['bearer_key', '"tokens.default.secret"'],
+      ['tool_list_max_age_seconds', '60'],
+    ] as const) {
+      expect(() => parseConfig(configWith({ [`services.norn.${key}`]: value }))).toThrow(
+        new RegExp(`process Service takes no ${key}[\\s\\S]*services\\.norn\\.${key}`, 'u'),
+      );
+    }
+  });
+
+  test('warns that this version does not serve an HTTP Service yet, naming its path', () => {
+    expect(parseConfigWithWarnings(httpServiceWith()).warnings).toEqual([
+      'services.norn is an HTTP Service, which this version of Modgud does not serve yet: an initialize at /norn/mcp gets HTTP 502.',
+    ]);
+  });
+});
+
+describe('expandHome', () => {
+  test('expands a leading ~/ to home and keeps an absolute path', () => {
+    expect(expandHome('~/.config/norn/tokens.toml', '/home/someone')).toBe(
+      '/home/someone/.config/norn/tokens.toml',
+    );
+    expect(expandHome('/etc/norn/token', '/home/someone')).toBe('/etc/norn/token');
   });
 });
 

@@ -1,4 +1,4 @@
-import type { ServiceConfig } from './config.ts';
+import type { ProcessServiceConfig } from './config.ts';
 
 // The variables a Child inherits from Modgud's own environment (ADR-0002).
 // Nothing else from Modgud's environment reaches a Child.
@@ -24,7 +24,7 @@ export const childEnvironment = ({
 }: {
   identity: string | undefined;
   parent: Readonly<Record<string, string | undefined>>;
-  service: Pick<ServiceConfig, 'env' | 'identity_env'>;
+  service: Pick<ProcessServiceConfig, 'env' | 'identity_env'>;
 }): Record<string, string> => {
   const environment: Record<string, string> = {};
   for (const name of BASE_VARIABLES) {

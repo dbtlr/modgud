@@ -12,17 +12,158 @@ const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 const variableName = z.string().regex(VARIABLE_NAME, 'Use an environment variable name.');
 
-const service = z.strictObject({
-  args: z.array(z.string()).default([]),
-  command: z.string().min(1),
-  cwd: z.string().min(1).optional(),
-  env: z.record(variableName, z.string()).default({}),
+// An absolute path, or one starting with `~/`, which `expandHome` resolves.
+const homePath = z
+  .string()
+  .refine(
+    (path) => path.startsWith('/') || path.startsWith('~/'),
+    'Use an absolute path or one starting with ~/.',
+  );
+
+// The hosts an HTTP Service's url may name once the URL parser has normalized
+// it, so `127.1` and `[0:0:0:0:0:0:0:1]` pass. A name such as `localhost` is
+// refused, because name resolution can reach an address the Service does not
+// bind (ADR-0005).
+const SERVICE_LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]']);
+
+// Whether `url` is an http URL to a loopback address, with no userinfo, query,
+// or fragment. An empty `?` or `#` leaves `search` or `hash` empty but stays
+// in `href`, so `href` is checked for both.
+const isLoopbackServiceUrl = (url: string) => {
+  if (!URL.canParse(url)) {
+    return false;
+  }
+  const parsed = new URL(url);
+  return (
+    parsed.protocol === 'http:' &&
+    SERVICE_LOOPBACK_HOSTS.has(parsed.hostname) &&
+    parsed.username === '' &&
+    parsed.password === '' &&
+    !parsed.href.includes('?') &&
+    !parsed.href.includes('#')
+  );
+};
+
+// An HTTP Service's MCP endpoint, kept as the URL parser normalizes it.
+const serviceUrl = z
+  .string()
+  .refine(
+    isLoopbackServiceUrl,
+    'Use an http URL to 127.0.0.1 or [::1] with no userinfo, query, or fragment, such as http://127.0.0.1:28472/mcp.',
+  )
+  .transform((url) => new URL(url).href);
+
+// A dotted path of TOML keys, such as `tokens.default.secret`. Each dot
+// separates two keys, so no key in it can contain a dot.
+const bearerKey = z
+  .string()
+  .regex(/^[^.]+(?:\.[^.]+)*$/u, 'Use a dotted path of keys, such as tokens.default.secret.');
+
+const PROCESS_SETTINGS = ['args', 'command', 'cwd', 'env', 'identity_env'] as const;
+const HTTP_SETTINGS = ['bearer_file', 'bearer_key', 'tool_list_max_age_seconds', 'url'] as const;
+
+// A Service Modgud runs as a Child (ADR-0002).
+export type ProcessServiceConfig = {
+  kind: 'process';
+  args: string[];
+  command: string;
+  cwd?: string;
+  env: Record<string, string>;
   // The variable that carries the Grant's Identity. It is reserved: only the
   // Grant sets it, so a value in `env` or the base never reaches the Child.
-  identity_env: variableName.optional(),
-  // At most one week, which keeps the timer within setTimeout's range.
-  idle_timeout_minutes: z.number().positive().max(10_080).default(30),
-});
+  identity_env?: string;
+  idle_timeout_minutes: number;
+};
+
+// A Service Modgud reaches over Streamable HTTP through a Link (ADR-0005).
+export type HttpServiceConfig = {
+  kind: 'http';
+  // Read when a Link starts, never at startup (service-bearer.ts).
+  bearer_file: string;
+  bearer_key?: string;
+  idle_timeout_minutes: number;
+  tool_list_max_age_seconds: number;
+  url: string;
+};
+
+export type ServiceConfig = ProcessServiceConfig | HttpServiceConfig;
+
+// A Service names exactly one of `command`, for a process Service, or `url`,
+// for an HTTP Service, and takes only that kind's settings.
+const service = z
+  .strictObject({
+    args: z.array(z.string()).optional(),
+    bearer_file: homePath.optional(),
+    bearer_key: bearerKey.optional(),
+    command: z.string().min(1).optional(),
+    cwd: z.string().min(1).optional(),
+    env: z.record(variableName, z.string()).optional(),
+    identity_env: variableName.optional(),
+    // At most one week, which keeps the timer within setTimeout's range.
+    idle_timeout_minutes: z.number().positive().max(10_080).default(30),
+    tool_list_max_age_seconds: z.int().min(1).max(3600).optional(),
+    url: serviceUrl.optional(),
+  })
+  .superRefine((settings, context) => {
+    if (settings.command !== undefined && settings.url !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Set command or url, not both.',
+        path: ['url'],
+      });
+      return;
+    }
+    if (settings.command === undefined && settings.url === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Set command for a process Service, or url for an HTTP Service.',
+        path: ['command'],
+      });
+      return;
+    }
+    const http = settings.url !== undefined;
+    for (const key of http ? PROCESS_SETTINGS : HTTP_SETTINGS) {
+      if (settings[key] !== undefined) {
+        context.addIssue({
+          code: 'custom',
+          message: `${http ? 'An HTTP' : 'A process'} Service takes no ${key}.`,
+          path: [key],
+        });
+      }
+    }
+    if (http && settings.bearer_file === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'An HTTP Service needs bearer_file.',
+        path: ['bearer_file'],
+      });
+    }
+  })
+  // The refinement above has passed, so a Service with a url has a
+  // bearer_file, and one without a url has a command.
+  .transform((settings): ServiceConfig => {
+    const { bearer_file, bearer_key, command, cwd, identity_env, idle_timeout_minutes, url } =
+      settings;
+    if (url !== undefined && bearer_file !== undefined) {
+      return {
+        bearer_file,
+        ...(bearer_key === undefined ? {} : { bearer_key }),
+        idle_timeout_minutes,
+        kind: 'http',
+        tool_list_max_age_seconds: settings.tool_list_max_age_seconds ?? 60,
+        url,
+      };
+    }
+    return {
+      args: settings.args ?? [],
+      command: command ?? '',
+      ...(cwd === undefined ? {} : { cwd }),
+      env: settings.env ?? {},
+      ...(identity_env === undefined ? {} : { identity_env }),
+      idle_timeout_minutes,
+      kind: 'process',
+    };
+  });
 
 // Phase 1's temporary credential harness: one static bearer token, kept only
 // as the SHA-256 hash of the token, in lowercase hex. Its credentials count as
@@ -104,14 +245,8 @@ const adminListener = z.strictObject({
 });
 
 const store = z.strictObject({
-  // Absent means `defaultStorePath`.
-  path: z
-    .string()
-    .refine(
-      (path) => path.startsWith('/') || path.startsWith('~/'),
-      'Use an absolute path or one starting with ~/.',
-    )
-    .optional(),
+  // Absent means `~/.local/state/modgud/modgud.sqlite`.
+  path: homePath.optional(),
 });
 
 const configSchema = z
@@ -140,19 +275,27 @@ const configSchema = z
       path: ['admin', 'port'],
     },
   )
-  // Drops the retired settings, with a warning for each one set.
+  // Drops the retired settings, with a warning for each one set, and warns of
+  // each HTTP Service, which the Public listener refuses until Links are
+  // served (ADR-0005).
   .transform(({ public: { max_sessions: retired, ...current }, ...config }) => ({
     config: { ...config, public: current },
-    warnings:
-      retired === undefined
+    warnings: [
+      ...(retired === undefined
         ? []
         : [
             `public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is ${String(current.max_sessions_per_grant)}.`,
-          ],
+          ]),
+      ...Object.entries(config.services)
+        .filter(([, settings]) => settings.kind === 'http')
+        .map(
+          ([name]) =>
+            `services.${name} is an HTTP Service, which this version of Modgud does not serve yet: an initialize at /${name}/mcp gets HTTP 502.`,
+        ),
+    ],
   }));
 
 export type Config = z.output<typeof configSchema>['config'];
-export type ServiceConfig = Config['services'][string];
 
 // The file `serve` reads when no `--config` names one.
 export const defaultConfigPath = (home: string) => join(home, '.config', 'modgud', 'modgud.toml');
@@ -161,12 +304,14 @@ export const defaultConfigPath = (home: string) => join(home, '.config', 'modgud
 export const serviceResource = (config: Config, serviceName: string) =>
   `${config.public.base_url}/${serviceName}/mcp`;
 
+// A configured path with a leading `~/` expanded to home.
+export const expandHome = (path: string, home: string) =>
+  path.startsWith('~/') ? join(home, path.slice(2)) : path;
+
 // The OAuth store's database file: `store.path` with a leading `~/` expanded
 // to home, or `~/.local/state/modgud/modgud.sqlite` when it is absent.
-export const resolveStorePath = (config: Config, home: string) => {
-  const path = config.store.path ?? '~/.local/state/modgud/modgud.sqlite';
-  return path.startsWith('~/') ? join(home, path.slice(2)) : path;
-};
+export const resolveStorePath = (config: Config, home: string) =>
+  expandHome(config.store.path ?? '~/.local/state/modgud/modgud.sqlite', home);
 
 // Parses and validates a configuration file's text, with a warning for each
 // retired setting it still sets. Throws an Error that names every invalid

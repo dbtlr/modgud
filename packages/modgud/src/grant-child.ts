@@ -22,7 +22,7 @@ import packageMetadata from '../package.json';
 import { Backoff } from './backoff.ts';
 import { Child } from './child.ts';
 import type { ExitStatus } from './child.ts';
-import type { ServiceConfig } from './config.ts';
+import type { ProcessServiceConfig } from './config.ts';
 import { CHILD_LOG_LIMIT, excerpt, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import {
@@ -117,7 +117,7 @@ const describeExit = ({ code, signal }: ExitStatus) =>
   signal === null ? `exited with status ${String(code)}` : `exited on ${signal}`;
 
 export type GrantChildOptions = {
-  command: Pick<ServiceConfig, 'args' | 'command' | 'cwd' | 'idle_timeout_minutes'>;
+  command: Pick<ProcessServiceConfig, 'args' | 'command' | 'cwd' | 'idle_timeout_minutes'>;
   // The Child's environment, built at each start.
   environment: () => Record<string, string>;
   grant: string;
