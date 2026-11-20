@@ -536,6 +536,53 @@ test('stops with backoff on a 401 to a Service response POST', async () => {
   expect(requests.map(({ method }) => method)).toEqual(['POST', 'POST', 'POST']);
 });
 
+test('fails the start when the answer to a ping during initialize gets a 401', async () => {
+  const answered = Promise.withResolvers<void>();
+  const ping = { id: 'service-ping', jsonrpc: '2.0', method: 'ping' } as const;
+  const encoder = new TextEncoder();
+  const { link, messages, requests, stops } = await fixture({
+    respond(request) {
+      if (httpMethod(request) === undefined) {
+        answered.resolve();
+        return new Response(null, { status: 401 });
+      }
+      if (httpMethod(request) !== 'initialize') {
+        return undefined;
+      }
+      const id = httpId(request);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(encoder.encode(httpEvent(ping)));
+            // The Service finishes `initialize` only after it has seen the 401.
+            await answered.promise;
+            await Bun.sleep(50);
+            controller.enqueue(
+              encoder.encode(
+                httpEvent(
+                  rpcResult(id, {
+                    capabilities: {},
+                    protocolVersion: '2025-11-25',
+                    serverInfo: { name: 'stub', version: '1' },
+                  }),
+                ),
+              ),
+            );
+            controller.close();
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream', 'mcp-session-id': 'session' } },
+      );
+    },
+  });
+  const starting = link.start();
+  await eventually(() => messages.length === 1);
+  link.answer(rpcResult('service-ping'));
+  expect(await starting).toEqual({ kind: 'failed', reason: 'Service refused the bearer' });
+  expect(stops).toEqual([]);
+  expect(requests.map(({ method }) => method)).not.toContain('DELETE');
+});
+
 test('posts the rewritten cancellation and aborts the request without events', async () => {
   let streamClosed = false;
   const { link, requests, messages, failures, stops } = await fixture({

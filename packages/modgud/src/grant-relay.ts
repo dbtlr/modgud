@@ -333,9 +333,8 @@ export class GrantRelay {
     const { stopped } = run.upstream;
     this.#unsettled.add(stopped);
     run.timers.reset = setTimeout(() => this.#backoff.reset(), this.#limits.backoffResetMs);
-    // The start's outcome is handled before the stop, even if both are settled.
-    void this.#awaitStart(run);
-    void this.#afterStopped(run, stopped);
+    const startHandled = this.#awaitStart(run);
+    void this.#afterStopped(run, startHandled, stopped);
   }
 
   // Handles how the run's start ended. A failed start was already stopped by
@@ -349,8 +348,11 @@ export class GrantRelay {
     }
   }
 
-  // Once the run's Upstream has stopped, the next run may start.
-  async #afterStopped(run: Run, stopped: Promise<void>) {
+  // Once the run's Upstream has stopped and GrantRelay has handled how its
+  // start ended, the next run may start. A stop that settles before the start
+  // result is read must not clear the run or demand another one first.
+  async #afterStopped(run: Run, startHandled: Promise<void>, stopped: Promise<void>) {
+    await startHandled;
     await stopped;
     this.#unsettled.delete(stopped);
     if (this.#run === run) {

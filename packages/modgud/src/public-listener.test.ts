@@ -405,16 +405,22 @@ describe('an HTTP Service, through its Link', () => {
   ) => {
     const stub = startStubHttpService({ sessionId: SERVICE_SESSION, ...options.stub });
     const bearerFile = join(harness.directory, 'service-token');
-    if (options.bearer !== undefined) {
-      await writeFile(bearerFile, options.bearer);
+    try {
+      if (options.bearer !== undefined) {
+        await writeFile(bearerFile, options.bearer);
+      }
+      const instance = await start({
+        httpServiceBearerFile: bearerFile,
+        httpServiceUrl: stub.url,
+        ...(options.childLimits === undefined ? {} : { childLimits: options.childLimits }),
+        ...(options.idleMinutes === undefined ? {} : { idleMinutes: options.idleMinutes }),
+      });
+      return { ...instance, bearerFile, stub };
+    } catch (error) {
+      // The caller's `finally` never runs for a failed setup.
+      await stub.server.stop(true);
+      throw error;
     }
-    const instance = await start({
-      httpServiceBearerFile: bearerFile,
-      httpServiceUrl: stub.url,
-      ...(options.childLimits === undefined ? {} : { childLimits: options.childLimits }),
-      ...(options.idleMinutes === undefined ? {} : { idleMinutes: options.idleMinutes }),
-    });
-    return { ...instance, bearerFile, stub };
   };
 
   test('a Caller initializes, lists tools, and calls the Service tool through Modgud', async () => {
@@ -504,13 +510,22 @@ describe('an HTTP Service, through its Link', () => {
 
       expect(messages).toHaveLength(1);
       expect(stub.requests.length).toBeGreaterThan(2);
+      const methods = stub.requests.map((request) => httpMethod(request));
+      expect(methods).toContain('notifications/initialized');
+      expect(methods).toContain('tools/call');
       for (const request of stub.requests) {
         const received = Object.fromEntries(request.headers);
         expect(received.authorization).toBe(`Bearer ${LINK_SECRET}`);
         expect(received.origin).toBeUndefined();
         expect(received['x-caller-marker']).toBeUndefined();
         expect(JSON.stringify(request.headers)).not.toContain(TOKEN);
-        expect(received['mcp-session-id'] ?? SERVICE_SESSION).toBe(SERVICE_SESSION);
+        // The Service gives its session id in the answer to `initialize`.
+        const method = httpMethod(request);
+        if (method === 'initialize') {
+          expect(received['mcp-session-id']).toBeUndefined();
+        } else if (method !== undefined) {
+          expect(received['mcp-session-id']).toBe(SERVICE_SESSION);
+        }
       }
     } finally {
       await stub.server.stop(true);

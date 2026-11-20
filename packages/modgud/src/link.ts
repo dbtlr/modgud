@@ -379,9 +379,17 @@ class Link implements Upstream {
         await this.#accepted(message, controller.signal);
       }
     } catch (error) {
-      if (this.#state === 'running' && kind !== 'delete') {
-        if (error instanceof LinkFaultError && !controller.signal.aborted) {
-          this.#selfStop(error);
+      const fault =
+        error instanceof LinkFaultError && !controller.signal.aborted && kind !== 'delete'
+          ? error
+          : undefined;
+      if (fault !== undefined && this.#state === 'starting') {
+        // An answer to a ping on the `initialize` stream: the start fails, and
+        // `start` reports it.
+        this.#finish({ fault: fault.kind, kind: 'failed', reason: fault.message });
+      } else if (this.#state === 'running' && kind !== 'delete') {
+        if (fault !== undefined) {
+          this.#selfStop(fault);
         } else {
           this.#warn(`bad ${kind} answer, dropping ${kind}`);
         }

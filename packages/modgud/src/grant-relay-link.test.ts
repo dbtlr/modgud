@@ -56,9 +56,11 @@ const fixture = async ({
   idleTimeoutMs = 60_000,
   limits = {},
   linkLimits,
+  missingBearer = false,
   respond,
 }: {
   idleTimeoutMs?: number;
+  missingBearer?: boolean;
   limits?: Partial<GrantLimits>;
   linkLimits?: LinkOptions['limits'];
   respond?: (request: StubHttpRequest, calls: number) => Response | Promise<Response> | undefined;
@@ -75,8 +77,11 @@ const fixture = async ({
   });
   cleanups.push(() => stub.server.stop(true));
   const home = await temporaryHome('modgud-relay-');
-  await writeFile(join(home, 'token'), 'startup-token');
-  const log = { info: () => undefined, warn: () => undefined };
+  if (!missingBearer) {
+    await writeFile(join(home, 'token'), 'startup-token');
+  }
+  const warnings: string[] = [];
+  const log = { info: () => undefined, warn: (line: string) => warnings.push(line) };
   const grantLimits: GrantLimits = { ...GRANT_LIMITS, ...limits };
   const relay = new GrantRelay({
     grant: 'static-token',
@@ -121,7 +126,7 @@ const fixture = async ({
     const answer = answerTo(id);
     return answer !== undefined && 'error' in answer ? answer.error.message : undefined;
   };
-  return { answerTo, delivered, errorTo, initializes, relay, session, stub };
+  return { answerTo, delivered, errorTo, initializes, relay, session, stub, warnings };
 };
 
 test('a stopped Link keeps its hung request counting until the hold passes', async () => {
@@ -140,10 +145,30 @@ test('a stopped Link keeps its hung request counting until the hold passes', asy
   relay.forward(session, toolRequest(2));
   expect(errorTo(2)).toBe(ERRORS.tooManyRequests.message);
 
-  await Bun.sleep(700);
-  relay.forward(session, toolRequest(3));
-  await eventually(() => answerTo(3) !== undefined);
-  expect(errorTo(3)).toBeUndefined();
+  // Probe with a fresh id until the hold has passed and the Grant admits one.
+  let probe = 3;
+  relay.forward(session, toolRequest(probe));
+  const deadline = performance.now() + 3000;
+  while (errorTo(probe) === ERRORS.tooManyRequests.message) {
+    if (performance.now() >= deadline) {
+      throw new Error('The hold was not released');
+    }
+    // oxlint-disable-next-line no-await-in-loop -- poll for the hold's release without a fixed delay
+    await Bun.sleep(10);
+    probe += 1;
+    relay.forward(session, toolRequest(probe));
+  }
+  await eventually(() => answerTo(probe) !== undefined);
+  expect(errorTo(probe)).toBeUndefined();
+});
+
+test('one initialize with a missing bearer file starts one Link and records one failure', async () => {
+  const { initializes, relay, warnings } = await fixture({ missingBearer: true });
+  expect(await relay.ready()).toEqual({ kind: 'failed' });
+  // Let a second Link, were one started, reach its own bearer read.
+  await Bun.sleep(50);
+  expect(warnings.filter((line) => line.includes('bearer file'))).toHaveLength(1);
+  expect(initializes()).toBe(0);
 });
 
 test('after a 404 on the session id, the next request starts a new Link at once', async () => {
@@ -203,12 +228,14 @@ test('ending a relay for shutdown leaves no timers that keep the process alive',
       `
     import { GRANT_LIMITS, GrantRelay } from ${JSON.stringify(join(import.meta.dir, 'grant-relay.ts'))};
     import { createLink } from ${JSON.stringify(join(import.meta.dir, 'link.ts'))};
+    const received = Promise.withResolvers();
     const stub = Bun.serve({
       hostname: '127.0.0.1',
       port: 0,
       async fetch(request) {
         const message = request.method === 'POST' ? await request.json() : undefined;
         if (message?.method === 'tools/call') {
+          received.resolve();
           return new Response(new ReadableStream({}), { headers: { 'content-type': 'text/event-stream' } });
         }
         if (message?.method === 'initialize') {
@@ -229,7 +256,12 @@ test('ending a relay for shutdown leaves no timers that keep the process alive',
     const session = { activity: 0, deliver() {}, end() {}, ended: false, given: undefined };
     relay.admit(session, 64);
     relay.forward(session, { id: 1, jsonrpc: '2.0', method: 'tools/call', params: {} });
-    await Bun.sleep(300);
+    const deadline = setTimeout(() => {
+      console.error('The stub never received tools/call');
+      process.exit(2);
+    }, 5000);
+    await received.promise;
+    clearTimeout(deadline);
     await relay.end('shutdown');
     await stub.stop(true);
   `,
