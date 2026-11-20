@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { JSONRPCMessage } from '@modelcontextprotocol/server';
@@ -28,6 +29,13 @@ afterEach(async () => {
   }
 });
 
+// A fresh home for one test's bearer file, removed after the test.
+const temporaryHome = async (prefix: string) => {
+  const home = await mkdtemp(join(tmpdir(), prefix));
+  cleanups.push(() => rm(home, { force: true, recursive: true }));
+  return home;
+};
+
 const fixture = async (
   stubOptions?: Parameters<typeof startStubHttpService>[0],
   limits?: LinkOptions['limits'],
@@ -35,9 +43,7 @@ const fixture = async (
 ) => {
   const stub = startStubHttpService(stubOptions);
   cleanups.push(() => stub.server.stop(true));
-  const scratch = join(import.meta.dir, '../../../.scratch');
-  await mkdir(scratch, { recursive: true });
-  const home = await mkdtemp(join(scratch, 'link-'));
+  const home = await temporaryHome('modgud-link-');
   const bearerPath = join(home, 'token');
   await writeFile(bearerPath, ' startup-token\n');
   const messages: JSONRPCMessage[] = [];

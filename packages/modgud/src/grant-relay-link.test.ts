@@ -2,7 +2,8 @@
 // Link stops, what counts toward backoff, and when the next Link may start.
 // Each test drives a real GrantRelay and Link against the stub HTTP Service.
 import { afterEach, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { JSONRPCMessage, RequestId } from '@modelcontextprotocol/server';
@@ -23,6 +24,13 @@ afterEach(async () => {
     await cleanup();
   }
 });
+
+// A fresh home for one test's bearer file, removed after the test.
+const temporaryHome = async (prefix: string) => {
+  const home = await mkdtemp(join(tmpdir(), prefix));
+  cleanups.push(() => rm(home, { force: true, recursive: true }));
+  return home;
+};
 
 const eventually = async (condition: () => boolean, timeoutMs = 3000) => {
   const deadline = performance.now() + timeoutMs;
@@ -66,9 +74,7 @@ const fixture = async ({
     sessionId: 'session',
   });
   cleanups.push(() => stub.server.stop(true));
-  const scratch = join(import.meta.dir, '../../../.scratch');
-  await mkdir(scratch, { recursive: true });
-  const home = await mkdtemp(join(scratch, 'relay-'));
+  const home = await temporaryHome('modgud-relay-');
   await writeFile(join(home, 'token'), 'startup-token');
   const log = { info: () => undefined, warn: () => undefined };
   const grantLimits: GrantLimits = { ...GRANT_LIMITS, ...limits };
@@ -212,7 +218,7 @@ test('ending a relay for shutdown leaves no timers that keep the process alive',
       },
     });
     const log = { info() {}, warn() {} };
-    const home = ${JSON.stringify(await mkdtemp(join(import.meta.dir, '../../../.scratch/linger-')))};
+    const home = ${JSON.stringify(await temporaryHome('modgud-linger-'))};
     await Bun.write(home + '/token', 'secret');
     const relay = new GrantRelay({
       grant: 'g', idleTimeoutMs: 60_000, label: 'l', service: 's', log,
