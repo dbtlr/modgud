@@ -206,6 +206,25 @@ describe('readServiceBearer file failures', () => {
     });
   });
 
+  test('fails with unreadable for a device that ends at once, though it reads as empty', async () => {
+    expect(await readServiceBearer({ bearer_file: '/dev/null' }, home)).toEqual({
+      failure: 'unreadable',
+      kind: 'failed',
+    });
+  });
+
+  // procfs files report a size of 0 whatever they hold, so only the read
+  // itself shows that this one is larger than 64 KiB.
+  test.skipIf(process.platform !== 'linux')(
+    'fails with unreadable for a file that reports a small size but holds more than 64 KiB',
+    async () => {
+      expect(await readServiceBearer({ bearer_file: '/proc/kallsyms' }, home)).toEqual({
+        failure: 'unreadable',
+        kind: 'failed',
+      });
+    },
+  );
+
   test('reads a file of up to 64 KiB, and fails with unreadable for a larger one', async () => {
     const largest = await fileWith('largest', 'a'.repeat(64 * 1024));
     const larger = await fileWith('larger', 'a'.repeat(64 * 1024 + 1));

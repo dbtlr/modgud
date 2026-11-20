@@ -66,7 +66,8 @@ const readBearerFile = async (
     if (!stats.isFile() || stats.size > MAX_BEARER_FILE_BYTES) {
       return { failure: 'unreadable' };
     }
-    // One byte past the limit shows a file that grew after the check.
+    // One byte past the limit shows a file larger than its size said: one
+    // that grew after the check, or a procfs file, which reports a size of 0.
     const buffer = Buffer.alloc(MAX_BEARER_FILE_BYTES + 1);
     let length = 0;
     while (length < buffer.length) {
