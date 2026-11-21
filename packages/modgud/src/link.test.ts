@@ -200,9 +200,9 @@ test('logs the bearer failure category without the file contents', async () => {
   expect(requests).toEqual([]);
   expect(warnings()).toEqual([
     {
-      fields: { ...BOUND, failure: expect.stringMatching(/invalid secret/u), path: bearerPath },
+      fields: { ...BOUND, error: expect.stringMatching(/invalid secret/u), file: bearerPath },
       level: 'warn',
-      message: `${LINK} bearer file {path}: {failure}`,
+      message: `${LINK} bearer file {file}: {error}`,
     },
   ]);
   expect(everything(warnings())).not.toContain('secret with spaces');
@@ -837,6 +837,23 @@ test('logs a failed start as a stop with its reason', async () => {
   expect(infos()[0]?.message).toBe(`${LINK} stopped: {reason}.`);
   expect(infos()[0]?.fields.reason).toMatch(/^bearer file .*token: .+$/u);
   expect(everything(infos())).not.toContain('secret with spaces');
+});
+
+test('a failed start logs only strings and numbers, never an Error', async () => {
+  const { link, infos, warnings } = await fixture({
+    respond: (request) =>
+      httpMethod(request) === 'initialize'
+        ? new Response('echo of startup-token', { status: 500 })
+        : undefined,
+  });
+  expect(await link.start()).toMatchObject({ kind: 'failed' });
+  const logged = [...infos(), ...warnings()];
+  expect(logged.length).toBeGreaterThan(0);
+  for (const { fields } of logged) {
+    for (const value of Object.values(fields)) {
+      expect(['string', 'number']).toContain(typeof value);
+    }
+  }
 });
 
 test('logs a self-stop after a 401 without the Service text', async () => {

@@ -1,3 +1,4 @@
+import type { LogFields } from '@loomcli/core';
 import {
   isInitializeRequest,
   isJsonContentType,
@@ -32,6 +33,7 @@ export type Grant = { id: string; identity: string | undefined; service: string 
 
 const STATIC_TOKEN_GRANT_ID = 'static-token';
 const AUTHORIZATION_GRANT_PREFIX = 'authorization:';
+const AUTHORIZATION_LOG_LENGTH = 8;
 
 // The OAuth authorization a Grant id names, or undefined for the static token.
 const authorizationOf = (grantId: string) =>
@@ -45,7 +47,16 @@ const grantLabel = (grantId: string) => {
   const authorizationId = authorizationOf(grantId);
   return authorizationId === undefined
     ? STATIC_TOKEN_GRANT_ID
-    : `authorization ${authorizationId.slice(0, 8)}`;
+    : `authorization ${authorizationId.slice(0, AUTHORIZATION_LOG_LENGTH)}`;
+};
+
+// The fields that name a Grant's OAuth authorization on its own, as the admin
+// and OAuth events do; the static token has none.
+const authorizationFields = (grantId: string): LogFields => {
+  const authorizationId = authorizationOf(grantId);
+  return authorizationId === undefined
+    ? {}
+    : { authorization: authorizationId.slice(0, AUTHORIZATION_LOG_LENGTH) };
 };
 
 // How often Modgud checks that each Grant's authorization is still active,
@@ -184,6 +195,7 @@ export const createPublicListener = ({
       // Every event of the relay, its Child or Link, and its tool-call limit
       // carries the Service, the kind of upstream, and the Grant.
       const relayLog = log.with({
+        ...authorizationFields(grant.id),
         grant: grantLabel(grant.id),
         service: serviceName,
         upstream: service.kind === 'http' ? 'link' : 'child',
@@ -262,7 +274,9 @@ export const createPublicListener = ({
   const authenticate = (
     request: Request,
     serviceName: string,
-  ): { result: 'valid'; grant: Grant; caller: string } | { result: 'invalid' | 'missing' } => {
+  ):
+    | { result: 'valid'; grant: Grant; caller: string; callerFields: LogFields }
+    | { result: 'invalid' | 'missing' } => {
     const token = bearerToken(request.headers.get('authorization'));
     if (token === undefined) {
       return { result: 'missing' };
@@ -271,6 +285,7 @@ export const createPublicListener = ({
       return config.harness.service === serviceName
         ? {
             caller: STATIC_TOKEN_CALLER,
+            callerFields: {},
             grant: { id: STATIC_TOKEN_GRANT_ID, identity: undefined, service: serviceName },
             result: 'valid',
           }
@@ -282,6 +297,10 @@ export const createPublicListener = ({
     }
     return {
       caller: `client ${loggable(clientLabel(access.clientId))} authorization ${access.authorizationId.slice(0, 8)}`,
+      callerFields: {
+        authorization: access.authorizationId.slice(0, AUTHORIZATION_LOG_LENGTH),
+        client: loggable(clientLabel(access.clientId)),
+      },
       grant: {
         id: `${AUTHORIZATION_GRANT_PREFIX}${access.authorizationId}`,
         identity: undefined,
@@ -304,7 +323,7 @@ export const createPublicListener = ({
   const initialize = async (
     request: Request,
     serviceName: string,
-    { caller, grant }: { caller: string; grant: Grant },
+    { caller, callerFields, grant }: { caller: string; callerFields: LogFields; grant: Grant },
   ) => {
     if (!isJsonContentType(request.headers.get('content-type'))) {
       return jsonRpcError(
@@ -347,6 +366,7 @@ export const createPublicListener = ({
     });
     if (!relay.admit(session, config.public.max_sessions_per_grant)) {
       log.warn('Refused a {service} session for {caller}: {limit} are opening.', {
+        ...callerFields,
         caller,
         limit: config.public.max_sessions_per_grant,
         service: serviceName,
@@ -376,6 +396,7 @@ export const createPublicListener = ({
     log.info(
       '{service} session {session} opened for {caller}, Origin {origin}, protocol {protocol}.',
       {
+        ...callerFields,
         caller,
         origin: origin === null ? 'none' : excerpt(origin, ORIGIN_LOG_LIMIT),
         protocol: excerpt(parsed.params.protocolVersion, PROTOCOL_LOG_LIMIT),

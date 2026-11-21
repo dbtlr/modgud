@@ -39,7 +39,12 @@ if (command === undefined || values.tool === undefined) {
 // Only a warning reaches the console; `with` binds nothing the console shows.
 const benchLog: Log = {
   info: () => undefined,
-  warn: (message) => console.error(message),
+  warn: (message, fields) =>
+    console.error(
+      fields === undefined || Object.keys(fields).length === 0
+        ? message
+        : `${message} ${JSON.stringify(fields)}`,
+    ),
   with: () => benchLog,
 };
 

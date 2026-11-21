@@ -173,14 +173,14 @@ test('one initialize with a missing bearer file starts one Link and records one 
   expect(entries.filter((entry) => entry.message.includes('bearer file'))).toEqual([
     {
       fields: {
-        failure: expect.any(String),
+        error: expect.any(String),
+        file: expect.stringMatching(/\/token$/u),
         grant: 'static-token',
-        path: expect.stringMatching(/\/token$/u),
         service: 'stub',
         upstream: 'link',
       },
       level: 'warn',
-      message: '{service} {upstream} for {grant} bearer file {path}: {failure}',
+      message: '{service} {upstream} for {grant} bearer file {file}: {error}',
     },
   ]);
   expect(initializes()).toBe(0);

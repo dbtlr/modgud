@@ -94,6 +94,29 @@ describe('sharing', () => {
   });
 });
 
+describe('naming an OAuth Grant', () => {
+  test("a relay event and the Session-open event carry the authorization's bare id prefix", async () => {
+    const { entries, store, url } = await start();
+    const { accessToken, authorizationId } = connectOAuthClient(store);
+    const prefix = authorizationId.slice(0, 8);
+    const { client } = await connect(url, { token: accessToken });
+
+    await callPid(client);
+
+    const [childStart] = childStarts(entries);
+    expect(childStart?.fields).toMatchObject({
+      authorization: prefix,
+      grant: `authorization ${prefix}`,
+    });
+    const [opened] = entriesOf(
+      entries,
+      '{service} session {session} opened for {caller}, Origin {origin}, protocol {protocol}.',
+    );
+    expect(opened?.fields.authorization).toBe(prefix);
+    expect(opened?.fields.client).toEqual(expect.any(String));
+  });
+});
+
 describe('renumbering', () => {
   test('two Sessions that use the same request id and progress token each get only their own messages', async () => {
     const { url } = await start();
@@ -562,7 +585,9 @@ describe('the tool call limit', () => {
       /^Rate limit reached: the limit is 1 tool call per minute\. Try again in (59|60) seconds\.$/u,
     );
     expect(await callPid(oauth.client)).toMatch(/^\d+$/u);
-    expect(entries.filter((entry) => entry.message.includes('reached its limit'))).toHaveLength(1);
+    expect(
+      entries.filter((entry) => entry.message.includes('reached its tool call limit')),
+    ).toHaveLength(1);
   });
 });
 

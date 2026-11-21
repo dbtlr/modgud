@@ -152,7 +152,7 @@ export class Session implements GrantSession {
       onOverflow: () => {
         this.#log.warn(
           '{service} session {session} ended a stream its Caller stopped reading, with more than {limit} MiB unsent.',
-          { limit: STREAM_LIMIT_BYTES / 1024 / 1024 },
+          { limitMiB: STREAM_LIMIT_BYTES / 1024 / 1024 },
         );
       },
     });

@@ -2,7 +2,12 @@ import type { Stats } from 'node:fs';
 import { chmod, lstat, mkdir, open, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import type { LogFields } from '@loomcli/core';
+
 import { describeError } from './log.ts';
+
+// How the store reports a warning: a constant template and its fields.
+export type StoreWarn = (template: string, fields: LogFields) => void;
 
 const PRIVATE_DIRECTORY = 0o700;
 const PRIVATE_FILE = 0o600;
@@ -53,7 +58,7 @@ const secureDirectory = async (directory: string, uid: number | undefined) => {
 };
 
 // Sets one existing file to mode 0600, warning when its mode was wider.
-const narrowFile = async (file: string, warn: (message: string) => void) => {
+const narrowFile = async (file: string, warn: StoreWarn) => {
   const existing = await statOrUndefined(file);
   if (existing === undefined || (existing.mode & GROUP_OR_OTHERS_ANY) === 0) {
     return;
@@ -65,7 +70,7 @@ const narrowFile = async (file: string, warn: (message: string) => void) => {
       cause: error,
     });
   }
-  warn(`Set ${file} from mode ${octal(existing.mode)} to 0600.`);
+  warn('Set {file} from mode {mode} to 0600.', { file, mode: octal(existing.mode) });
 };
 
 // Checks the store's directory and files before Modgud or a command reads the
@@ -76,7 +81,7 @@ const narrowFile = async (file: string, warn: (message: string) => void) => {
 // names the path and how to fix it.
 export const secureStoreFiles = async (
   path: string,
-  warn: (message: string) => void,
+  warn: StoreWarn,
   uid: number | undefined = process.getuid?.(),
 ) => {
   await secureDirectory(dirname(path), uid);

@@ -189,9 +189,9 @@ class Link implements Upstream {
       if (bearer.kind === 'failed') {
         const path = expandHome(service.bearer_file, home);
         const reason = `bearer file ${path}: ${bearer.failure}`;
-        this.#options.log.warn('{service} {upstream} for {grant} bearer file {path}: {failure}', {
-          failure: bearer.failure,
-          path,
+        this.#options.log.warn('{service} {upstream} for {grant} bearer file {file}: {error}', {
+          error: bearer.failure,
+          file: path,
         });
         this.#finish({ kind: 'failed', reason });
         return { kind: 'failed', reason };

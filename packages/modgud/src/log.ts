@@ -40,6 +40,13 @@ export const excerpt = (text: string, limit: number) =>
   // oxlint-disable-next-line typescript/no-misused-spread -- code points, as loggable counts them
   loggable([...text].slice(0, limit).join(''));
 
+// A message template with each `{name}` replaced by its field, for the same
+// event printed as a sentence on `out`.
+export const fillTemplate = (template: string, fields: LogFields) =>
+  template.replaceAll(/\{(\w+)\}/g, (placeholder, name: string) =>
+    name in fields ? String(fields[name]) : placeholder,
+  );
+
 // An error's message, for a log line or a fatal message.
 export const describeError = (error: unknown) =>
   error instanceof Error ? error.message : String(error);

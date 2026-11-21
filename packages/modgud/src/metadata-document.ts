@@ -197,9 +197,9 @@ export const createMetadataDocumentFetcher = ({
       return metadata;
     } catch (error) {
       const reason = error instanceof FetchFailureError ? error.message : String(error);
-      log.warn('Could not use the client metadata document of {client}: {reason}.', {
+      log.warn('Could not use the client metadata document of {client}: {error}.', {
         client: label,
-        reason: loggable(reason),
+        error: loggable(reason),
       });
       return undefined;
     }

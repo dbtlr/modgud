@@ -174,7 +174,7 @@ test('serve starts with the retired public.max_sessions set, and warns that it i
   try {
     await readUntil(
       lines,
-      /^warn In \{path\}: \{warning\} \{.*"warning":"public\.max_sessions is ignored: /u,
+      /^warn In \{file\}: \{warning\} \{.*"warning":"public\.max_sessions is ignored: /u,
     );
     child.kill('SIGTERM');
     await readUntil(lines, /^info Stopped\. \{\}$/u);

@@ -1,3 +1,5 @@
+import { expect } from 'bun:test';
+
 import type { LogFields } from '@loomcli/core';
 
 import type { Log } from '../log.ts';
@@ -10,9 +12,19 @@ export type LogEntry = {
   fields: LogFields;
 };
 
-// Loom copies fields as JSON, which drops a field whose value is undefined.
-const withoutUndefined = (fields: LogFields): LogFields =>
-  Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+// Loom copies fields as JSON: a field whose value is undefined drops out, and
+// an Error becomes { name, message, stack, cause }, so a test can see an Error
+// that wrongly enters a field.
+const copyOfFields = (fields: LogFields): LogFields => {
+  const copy: unknown = JSON.parse(
+    JSON.stringify(fields, (_key, value: unknown) =>
+      value instanceof Error
+        ? { cause: value.cause, message: value.message, name: value.name, stack: value.stack }
+        : value,
+    ),
+  );
+  return typeof copy === 'object' && copy !== null ? Object.fromEntries(Object.entries(copy)) : {};
+};
 
 // A Log that records each call as an entry. `with` binds fields under the
 // call's own, as Loom does, and shares the same entries.
@@ -20,12 +32,12 @@ export const createLogRecorder = () => {
   const entries: LogEntry[] = [];
   const bind = (bound: LogFields): Log => {
     const record = (level: LogEntry['level']) => (message: string, fields?: LogFields) => {
-      entries.push({ fields: { ...bound, ...withoutUndefined(fields ?? {}) }, level, message });
+      entries.push({ fields: copyOfFields({ ...bound, ...fields }), level, message });
     };
     return {
       info: record('info'),
       warn: record('warn'),
-      with: (more) => bind({ ...bound, ...withoutUndefined(more) }),
+      with: (more) => bind({ ...bound, ...copyOfFields(more) }),
     };
   };
   return { entries, log: bind({}) };
@@ -47,12 +59,31 @@ const STOPPED = '{service} {upstream} for {grant} stopped: {reason}.';
 export const stderrOf = (entries: LogEntry[]) =>
   entriesOf(entries, STDERR).map((entry) => String(entry.fields.line));
 
-// The Session end events with this reason.
-export const sessionsEnded = (entries: LogEntry[], reason: string) =>
-  entriesOf(entries, '{service} session {session} ended: {reason}.').filter(
-    (entry) => entry.fields.reason === reason,
-  );
+// Checks the fields a relay binds on every Child and Link event: the Service,
+// the kind of upstream, and the Grant. A call field that replaced one of them
+// fails here.
+export const expectBoundFields = (entry: LogEntry) => {
+  expect(entry.fields.service).toMatch(/^[\w-]+$/u);
+  expect(entry.fields.upstream).toMatch(/^(child|link)$/u);
+  expect(entry.fields.grant).toMatch(/^(static-token|authorization [\w-]{8})$/u);
+};
 
-// Whether a Child or Link stopped for this reason.
-export const stoppedFor = (entries: LogEntry[], reason: string) =>
-  entriesOf(entries, STOPPED).some((entry) => entry.fields.reason === reason);
+// The Session end events with this reason. Each names its Service and the
+// first eight characters of the Session id.
+export const sessionsEnded = (entries: LogEntry[], reason: string) =>
+  entriesOf(entries, '{service} session {session} ended: {reason}.')
+    .filter((entry) => entry.fields.reason === reason)
+    .map((entry) => {
+      expect(entry.fields.session).toMatch(/^[0-9a-f]{8}$/u);
+      expect(entry.fields.service).toMatch(/^[\w-]+$/u);
+      return entry;
+    });
+
+// Whether a Child or Link stopped for this reason, with its bound fields.
+export const stoppedFor = (entries: LogEntry[], reason: string) => {
+  const stops = entriesOf(entries, STOPPED).filter((entry) => entry.fields.reason === reason);
+  for (const entry of stops) {
+    expectBoundFields(entry);
+  }
+  return stops.length > 0;
+};

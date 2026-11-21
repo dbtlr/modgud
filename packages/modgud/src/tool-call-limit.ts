@@ -65,7 +65,7 @@ export class ToolCallLimit {
       if (this.#episode === undefined) {
         this.#episode = { lastRefusalAt: now, refused: 0 };
         this.#log.warn(
-          '{service} {upstream} for {grant} refused a tool call: the Grant reached its limit of {limit} per minute.',
+          '{service} {upstream} for {grant} refused a tool call: the Grant reached its tool call limit of {limit} per minute.',
           { limit: this.limit },
         );
       }
@@ -86,7 +86,7 @@ export class ToolCallLimit {
   endEpisode() {
     if (this.#episode !== undefined) {
       this.#log.info(
-        '{service} {upstream} for {grant} ended a tool call limit episode: it refused {refused} in the episode.',
+        '{service} {upstream} for {grant} ended a tool call limit episode, refusing tool calls: {refused}.',
         { refused: this.#episode.refused },
       );
       this.#episode = undefined;

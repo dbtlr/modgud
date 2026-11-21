@@ -95,7 +95,7 @@ test('a GET stream holding more than 1 MiB unread ends on the next message, and 
   await Bun.sleep(5);
   // The event carries the fields the Session bound, and its own limit.
   expect(overflowed(entries).map((entry) => entry.fields)).toEqual([
-    { limit: 1, service: 'stub', session: session.id.slice(0, 8) },
+    { limitMiB: 1, service: 'stub', session: session.id.slice(0, 8) },
   ]);
   expect(session.ended).toBe(false);
 

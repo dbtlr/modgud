@@ -254,7 +254,7 @@ describe('fetching a client metadata document', () => {
     expect(await fetchDocument(CLIENT_ID)).toBeUndefined();
     expect(entries).toHaveLength(1);
     expect(entries[0]?.message).toBe(
-      'Could not use the client metadata document of {client}: {reason}.',
+      'Could not use the client metadata document of {client}: {error}.',
     );
     expect(entries[0]?.fields.client).toBe('chatgpt.com');
   });

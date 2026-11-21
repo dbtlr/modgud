@@ -18,14 +18,14 @@ const SECOND = 1000;
 // What the relay's Grant binds to every event of its log.
 const BOUND = { grant: 'static-token', service: 'stub', upstream: 'child' };
 const LIMIT_REACHED =
-  '{service} {upstream} for {grant} refused a tool call: the Grant reached its limit of {limit} per minute.';
+  '{service} {upstream} for {grant} refused a tool call: the Grant reached its tool call limit of {limit} per minute.';
 
 // The entry that ends an episode that refused `refused` tool calls.
 const episodeEnd = (refused: number): LogEntry => ({
   fields: { ...BOUND, refused },
   level: 'info',
   message:
-    '{service} {upstream} for {grant} ended a tool call limit episode: it refused {refused} in the episode.',
+    '{service} {upstream} for {grant} ended a tool call limit episode, refusing tool calls: {refused}.',
 });
 
 const relays: GrantRelay[] = [];

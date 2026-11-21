@@ -48,13 +48,18 @@ const originRefused = (caller: string) => ({
 });
 
 // The event of a Session opened for a caller.
-const sessionOpened = (caller: string, origin: string) => ({
+const sessionOpened = (
+  caller: string,
+  origin: string,
+  credential?: { authorization: string; client: string },
+) => ({
   fields: {
+    ...credential,
     caller,
     origin,
     protocol: '2025-11-25',
     service: 'stub',
-    session: expect.stringMatching(/^\w{8}$/u),
+    session: expect.stringMatching(/^[0-9a-f]{8}$/u),
   },
   level: 'info' as const,
   message: '{service} session {session} opened for {caller}, Origin {origin}, protocol {protocol}.',
@@ -189,6 +194,7 @@ describe('a Caller with the harness token', () => {
     });
     expect(entries).toContainEqual({
       fields: {
+        authorization: authorizationId.slice(0, 8),
         grant: `authorization ${authorizationId.slice(0, 8)}`,
         line: 'stub-service started',
         service: 'stub',
@@ -220,8 +226,8 @@ describe('logging', () => {
 
     await client.callTool({ arguments: {}, name: 'unmatched-response' });
 
-    await waitFor(() => entries.some((entry) => String(entry.fields.rpc).includes('forged')));
-    expect(entries.filter((entry) => String(entry.fields.rpc).includes('\n'))).toEqual([]);
+    await waitFor(() => entries.some((entry) => String(entry.fields.id).includes('forged')));
+    expect(entries.filter((entry) => String(entry.fields.id).includes('\n'))).toEqual([]);
   });
 });
 
@@ -617,7 +623,7 @@ describe('an HTTP Service, through its Link', () => {
             entry.fields.service === 'stub' &&
             entry.fields.upstream === 'link' &&
             entry.fields.grant === 'static-token' &&
-            entry.fields.path === bearerFile,
+            entry.fields.file === bearerFile,
         ),
       ).toBe(true);
       expect(everything(entries)).not.toContain(LINK_SECRET);
@@ -816,6 +822,7 @@ describe('a Caller with an OAuth access token', () => {
       sessionOpened(
         `client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}`,
         'https://claude.ai',
+        { authorization: authorizationId.slice(0, 8), client: clientId.slice(0, 8) },
       ),
       sessionOpened('the static bearer token', 'none'),
     ]);

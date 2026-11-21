@@ -509,9 +509,9 @@ export class GrantRelay {
     const entry = typeof id === 'number' ? this.#inFlight.get(id) : undefined;
     if (entry === undefined) {
       this.#log.warn(
-        '{service} {upstream} for {grant} sent a response to no open request: id {rpc}',
+        '{service} {upstream} for {grant} sent a response to no open request: id {id}',
         {
-          rpc: excerpt(JSON.stringify(id), CHILD_LOG_LIMIT),
+          id: excerpt(JSON.stringify(id), CHILD_LOG_LIMIT),
         },
       );
       return;

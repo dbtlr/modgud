@@ -1,5 +1,6 @@
 // Runs Public listeners serving the stub Service for integration tests, and
 // speaks to them as Callers do: through the SDK client, or with raw HTTP.
+import { expect } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +16,7 @@ import type { PublicListener } from '../public-listener.ts';
 import { CONNECTION_IDLE_SECONDS, listen } from '../serve.ts';
 import { openStore } from '../store.ts';
 import type { Store } from '../store.ts';
-import { createLogRecorder } from './log-recorder.ts';
+import { createLogRecorder, expectBoundFields } from './log-recorder.ts';
 import type { LogEntry } from './log-recorder.ts';
 
 export const TOKEN = 'harness-token';
@@ -396,10 +397,17 @@ export const waitFor = async (condition: () => boolean | Promise<boolean>, timeo
   }
 };
 
-// Log entries of the Children that started.
+// Log entries of the Children that started, each with its bound fields and a
+// process id.
 export const childStarts = (entries: LogEntry[]) =>
-  entries.filter(
-    (entry) =>
-      entry.message === '{service} {upstream} for {grant} started, pid {pid}.' &&
-      entry.fields.upstream === 'child',
-  );
+  entries
+    .filter(
+      (entry) =>
+        entry.message === '{service} {upstream} for {grant} started, pid {pid}.' &&
+        entry.fields.upstream === 'child',
+    )
+    .map((entry) => {
+      expectBoundFields(entry);
+      expect(Number.isSafeInteger(entry.fields.pid)).toBe(true);
+      return entry;
+    });
