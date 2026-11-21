@@ -16,14 +16,14 @@
         "modgud": "src/main.ts",
       },
       "dependencies": {
-        "@loomcli/core": "0.18.0",
-        "@loomcli/plugins": "0.18.0",
+        "@loomcli/core": "0.20.0",
+        "@loomcli/plugins": "0.20.0",
         "@modelcontextprotocol/server": "2.4.0",
         "zod": "4.6.7",
       },
       "devDependencies": {
-        "@loomcli/loom": "0.18.0",
-        "@loomcli/testing": "0.18.0",
+        "@loomcli/loom": "0.20.0",
+        "@loomcli/testing": "0.20.0",
         "@modelcontextprotocol/client": "2.4.0",
       },
     },
@@ -43,15 +43,15 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@loomcli/core": ["@loomcli/core@0.18.0", "", { "dependencies": { "@standard-schema/spec": "^1.1.0" } }, "sha512-/R1QTjvCdagWz3hFxT1+xpKo+VmGw61r7VjZPJN0x3VdHmnAoc6Zb3M68FNWPqWcBlES7zV79CF+eJZZuRe1Qw=="],
+    "@loomcli/core": ["@loomcli/core@0.20.0", "", { "dependencies": { "@standard-schema/spec": "^1.1.0" } }, "sha512-rpAmF8bM34tGRFMrGqYu07FDiyNXf8i2dE5ejx0iz5s0eBCuZJTLEeSL7aYMXFQ6kwmYY8taCX3XMdyTjAxdqg=="],
 
-    "@loomcli/loom": ["@loomcli/loom@0.18.0", "", { "peerDependencies": { "pnpm": "12.8.1", "typescript": "^7.0.2" }, "optionalPeers": ["pnpm", "typescript"], "bin": { "loom": "dist/main.js" } }, "sha512-5SqlpshOa2kcYWewdn0+cxUv36AloD+wHMU00lOfX2kwliPmDPVq2g8x6mBVg0Kaivoe7bVOPQhRZfkZAvVIBw=="],
+    "@loomcli/loom": ["@loomcli/loom@0.20.0", "", { "peerDependencies": { "pnpm": ">=12.16.1", "typescript": "^7.0.2" }, "optionalPeers": ["pnpm", "typescript"], "bin": { "loom": "dist/main.js" } }, "sha512-X6BZ3xteEC5boUA2aSyOIbW1Fk1WVVvp/erDbhQTSs4sS0GhS0CSYqcR1VmpIloTg/IdUP/yIY2nu6SMVfZGCg=="],
 
-    "@loomcli/plugins": ["@loomcli/plugins@0.18.0", "", { "dependencies": { "@loomcli/validators": "0.18.0", "smol-toml": "^1.9.1", "valibot": "^1.5.0", "yaml": "^2.9.1" }, "peerDependencies": { "@loomcli/core": "0.18.0" } }, "sha512-LFvnDfMh1RXpAbH87rr8DP3W8dZLbuRVNNKfW7qdoOPeXh7PcUx+/tL0Cr6acHlz3azr47gIsHa9T5yFSpDGAw=="],
+    "@loomcli/plugins": ["@loomcli/plugins@0.20.0", "", { "dependencies": { "@loomcli/validators": "0.20.0", "smol-toml": "^1.9.1", "valibot": "^1.5.0", "yaml": "^2.9.1" }, "peerDependencies": { "@loomcli/core": "0.20.0", "@sigstore/bundle": "^5.0.1", "@sigstore/tuf": "^5.0.1", "@sigstore/verify": "^4.1.3" }, "optionalPeers": ["@sigstore/bundle", "@sigstore/tuf", "@sigstore/verify"] }, "sha512-oynI/6Er3pk4Wsb3gI/+Jp9ef7YS6Cb9PI9+/xa739G52F1TVYGvcTe/KWRK3Hp4MR3xh1ZE5PPuace74lXK6g=="],
 
-    "@loomcli/testing": ["@loomcli/testing@0.18.0", "", { "peerDependencies": { "@loomcli/core": "0.18.0" } }, "sha512-hp4Pz47kDURXs+UQUZa31PzLklT8DcRcG5K/Dq5SqZJh5vNzQFPt4szxuI4LIPbAsOdLgmvQ5MB4zRQRldsKRA=="],
+    "@loomcli/testing": ["@loomcli/testing@0.20.0", "", { "peerDependencies": { "@loomcli/core": "0.20.0", "@loomcli/plugins": "0.20.0" }, "optionalPeers": ["@loomcli/plugins"] }, "sha512-qpuHnv3+MDRI2kb7n02LiMOe4BxJPNatYXSuYlxSbkHHdboUBPPehuHmVnhqcQYmZsFVLHwZWsIjmQ511IKPWQ=="],
 
-    "@loomcli/validators": ["@loomcli/validators@0.18.0", "", { "peerDependencies": { "@loomcli/core": "0.18.0" } }, "sha512-fb0DbcmqceBx7bhCzw7a/VHD2q78eDUbh/DN+vF6T+4uy51xS4W7d3PXk0LjUCbX1O4NS3P1Ob7dj3CPJyNu0Q=="],
+    "@loomcli/validators": ["@loomcli/validators@0.20.0", "", { "peerDependencies": { "@loomcli/core": "0.20.0" } }, "sha512-TodkXHt6z//LWjv2BkBsgC07kODyk2RewH433GEqMeCr54p238AmakWTpJK3xhQvEqHweIPXclDH+xN95w8iPw=="],
 
     "@modelcontextprotocol/client": ["@modelcontextprotocol/client@2.4.0", "", { "dependencies": { "@modelcontextprotocol/core": "2.4.0", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.8", "jose": "^6.1.3", "pkce-challenge": "^5.0.0", "zod": "^4.2.0" } }, "sha512-LgrD2OphHuG12vfKFKz6SOnq7bKHQmhGJIAYdD+MZBn2npHEyry6uD8zvktodtl5CQM85MO0anUyD9JwmUmxww=="],
 

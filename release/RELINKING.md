@@ -23,7 +23,7 @@ bun install --frozen-lockfile
 python3 release/relink.py --runtime /absolute/path/to/rebuilt/bun --out /absolute/path/to/modgud
 ```
 
-`relink.py` obtains canonical release facts from locked Loom 0.18.0 using its documented `--define` interface.
+`relink.py` obtains canonical release facts from locked Loom 0.20.0 using its documented `--define` interface.
 It passes those facts to Bun's `--compile-executable-path` interface without modifying Loom or application behavior.
 The ordinary release build remains `bun run build`.
 
