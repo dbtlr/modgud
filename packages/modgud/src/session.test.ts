@@ -3,6 +3,8 @@ import { expect, test } from 'bun:test';
 import type { GrantRelay } from './grant-relay.ts';
 import { initializeAnswer } from './protocol.ts';
 import { Session } from './session.ts';
+import { createLogRecorder } from './testing/log-recorder.ts';
+import type { LogEntry } from './testing/log-recorder.ts';
 
 const URL_ = 'http://127.0.0.1/stub/mcp';
 const VERSION = '2025-11-25';
@@ -10,13 +12,13 @@ const VERSION = '2025-11-25';
 // A Session over a Child that is never asked for anything: the test only
 // opens it, opens GET streams, and delivers notifications to it.
 const openSession = async () => {
-  const lines: string[] = [];
+  const { entries, log } = createLogRecorder();
   const child = { release: () => [] } as unknown as GrantRelay;
   const session = new Session({
     child,
     grant: 'grant',
     idleMs: 60_000,
-    log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
+    log,
     onEnd: () => undefined,
     service: 'stub',
   });
@@ -47,7 +49,7 @@ const openSession = async () => {
     }),
   );
   await opened.text();
-  return { lines, session };
+  return { entries, session };
 };
 
 const openGet = async (session: Session) => {
@@ -72,10 +74,15 @@ const quarterMiB = {
   params: { padding: 'p'.repeat(256 * 1024) },
 };
 
-const overflowed = (lines: string[]) => lines.filter((line) => line.includes('stopped reading'));
+const overflowed = (entries: LogEntry[]) =>
+  entries.filter(
+    (entry) =>
+      entry.message ===
+      '{service} session {session} ended a stream its Caller stopped reading, with more than {limit} MiB unsent.',
+  );
 
 test('a GET stream holding more than 1 MiB unread ends on the next message, and the Session stays open', async () => {
-  const { lines, session } = await openSession();
+  const { entries, session } = await openSession();
   await openGet(session);
   // Four quarter-MiB events, framing included, come to just over 1 MiB held.
   for (let index = 0; index < 4; index += 1) {
@@ -83,10 +90,13 @@ test('a GET stream holding more than 1 MiB unread ends on the next message, and 
     // oxlint-disable-next-line no-await-in-loop -- one event at a time
     await Bun.sleep(5);
   }
-  expect(overflowed(lines)).toEqual([]);
+  expect(overflowed(entries)).toEqual([]);
   session.deliver(quarterMiB, { activity: false });
   await Bun.sleep(5);
-  expect(overflowed(lines)).toHaveLength(1);
+  // The event carries the fields the Session bound, and its own limit.
+  expect(overflowed(entries).map((entry) => entry.fields)).toEqual([
+    { limit: 1, service: 'stub', session: session.id.slice(0, 8) },
+  ]);
   expect(session.ended).toBe(false);
 
   // The Caller can open a new GET stream, and it carries notifications.

@@ -9,9 +9,24 @@ import type { JSONRPCMessage, JSONRPCRequest, RequestId } from '@modelcontextpro
 import { GRANT_LIMITS, GrantRelay } from './grant-relay.ts';
 import type { GrantLimits, GrantSession } from './grant-relay.ts';
 import { ERRORS } from './protocol.ts';
+import { createLogRecorder } from './testing/log-recorder.ts';
+import type { LogEntry } from './testing/log-recorder.ts';
 import type { StartResult, Upstream, UpstreamEvents } from './upstream.ts';
 
 const SECOND = 1000;
+
+// What the relay's Grant binds to every event of its log.
+const BOUND = { grant: 'static-token', service: 'stub', upstream: 'child' };
+const LIMIT_REACHED =
+  '{service} {upstream} for {grant} refused a tool call: the Grant reached its limit of {limit} per minute.';
+
+// The entry that ends an episode that refused `refused` tool calls.
+const episodeEnd = (refused: number): LogEntry => ({
+  fields: { ...BOUND, refused },
+  level: 'info',
+  message:
+    '{service} {upstream} for {grant} ended a tool call limit episode: it refused {refused} in the episode.',
+});
 
 const relays: GrantRelay[] = [];
 
@@ -106,14 +121,12 @@ const fixture = ({
 }) => {
   const clock = { now: 0 };
   const service = scriptedService({ restartsAtOnce });
-  const info: string[] = [];
-  const warnings: string[] = [];
+  const { entries, log } = createLogRecorder();
   const relay = new GrantRelay({
     grant: 'static-token',
     idleTimeoutMs: 60 * 60 * SECOND,
-    label: 'stub child for static-token',
     limits: { ...GRANT_LIMITS, ...limits },
-    log: { info: (line) => info.push(line), warn: (line) => warnings.push(line) },
+    log: log.with(BOUND),
     maxToolCallsPerMinute: limit,
     now: () => clock.now,
     service: 'stub',
@@ -160,13 +173,13 @@ const fixture = ({
     answerTo,
     call,
     clock,
-    info,
+    info: () => entries.filter((entry) => entry.level === 'info'),
     openSession,
     refusalTo,
     relay,
     service,
     session,
-    warnings,
+    warnings: () => entries.filter((entry) => entry.level === 'warn'),
   };
 };
 
@@ -364,7 +377,7 @@ describe('the refusal', () => {
 });
 
 // The warnings that start an episode.
-const started = (lines: string[]) => lines.filter((line) => line.includes('reached its limit'));
+const started = (entries: LogEntry[]) => entries.filter((entry) => entry.message === LIMIT_REACHED);
 
 describe('episode logging', () => {
   test('logs one warning when refusals start and one count when they end', async () => {
@@ -373,21 +386,23 @@ describe('episode logging', () => {
     await call(0);
     await call(10 * SECOND);
     await call(20 * SECOND);
-    expect(warnings).toEqual([
-      'stub child for static-token refused a tool call: the Grant reached its limit of 1 tool call per minute.',
+    expect(warnings()).toEqual([
+      {
+        fields: { ...BOUND, limit: 1 },
+        level: 'warn',
+        message: LIMIT_REACHED,
+      },
     ]);
-    expect(info).toEqual([]);
+    expect(info()).toEqual([]);
 
     // Sent, but within 60 seconds of the last refusal: the episode goes on.
     await call(70 * SECOND);
-    expect(info).toEqual([]);
+    expect(info()).toEqual([]);
 
     // The first call sent after a full 60 seconds without a refusal ends it.
     await call(140 * SECOND);
-    expect(info).toEqual([
-      'stub child for static-token ended a tool call limit episode: it refused 2 tool calls.',
-    ]);
-    expect(warnings).toHaveLength(1);
+    expect(info()).toEqual([episodeEnd(2)]);
+    expect(warnings()).toHaveLength(1);
   });
 
   test('a call sent exactly 60 seconds after the last refusal ends the episode, and one sent sooner does not', async () => {
@@ -397,13 +412,11 @@ describe('episode logging', () => {
       await call(10 * SECOND);
       // The call at 0 has left the window, so this one is sent.
       await call(10 * SECOND + quietMs);
-      return info;
+      return info();
     };
 
     expect(await sentAfter(60 * SECOND - 1)).toEqual([]);
-    expect(await sentAfter(60 * SECOND)).toEqual([
-      'stub child for static-token ended a tool call limit episode: it refused 1 tool call.',
-    ]);
+    expect(await sentAfter(60 * SECOND)).toEqual([episodeEnd(1)]);
   });
 
   test('a Caller that calls without pause at the limit costs two lines per episode, at least 60 seconds apart', async () => {
@@ -415,22 +428,20 @@ describe('episode logging', () => {
       // oxlint-disable-next-line no-await-in-loop -- the calls are made in order on the clock
       await call(at);
     }
-    expect(started(warnings)).toHaveLength(1);
-    expect(info).toEqual([]);
+    expect(started(warnings())).toHaveLength(1);
+    expect(info()).toEqual([]);
 
     await call(700 * SECOND);
-    expect(started(warnings)).toHaveLength(1);
-    expect(info).toHaveLength(1);
+    expect(started(warnings())).toHaveLength(1);
+    expect(info()).toHaveLength(1);
     // Refused at 40, 100, ..., 580 seconds: every third call, 10 in all.
-    expect(info).toEqual([
-      'stub child for static-token ended a tool call limit episode: it refused 10 tool calls.',
-    ]);
+    expect(info()).toEqual([episodeEnd(10)]);
 
     // A refusal right after the episode ended starts the next one, which is
     // at least 60 seconds after the last one started.
     await call(700 * SECOND + 1);
     await call(700 * SECOND + 2);
-    expect(started(warnings)).toHaveLength(2);
+    expect(started(warnings())).toHaveLength(2);
   });
 
   test('a call refused for another reason neither starts nor ends an episode', async () => {
@@ -443,28 +454,26 @@ describe('episode logging', () => {
     await call(0);
     // Refused for ADR-0002's request limit: one request is open.
     await call(SECOND);
-    expect(started(warnings)).toEqual([]);
+    expect(started(warnings())).toEqual([]);
     service.answerHeld();
     service.control.holding = false;
 
     // Now an episode: refused for this limit.
     await call(2 * SECOND);
-    expect(started(warnings)).toHaveLength(1);
+    expect(started(warnings())).toHaveLength(1);
 
     // After a quiet minute, a refusal for the request limit does not end it.
     service.control.holding = true;
     relay.forward(session, { id: 'held-list', jsonrpc: '2.0', method: 'tools/list' });
     await call(70 * SECOND);
-    expect(info).toEqual([]);
+    expect(info()).toEqual([]);
     service.answerHeld();
     service.control.holding = false;
 
     // The first call handed over ends it, counting only this limit's refusal.
     await call(71 * SECOND);
-    expect(info).toEqual([
-      'stub child for static-token ended a tool call limit episode: it refused 1 tool call.',
-    ]);
-    expect(started(warnings)).toHaveLength(1);
+    expect(info()).toEqual([episodeEnd(1)]);
+    expect(started(warnings())).toHaveLength(1);
   });
 
   for (const kind of ['grant ended', 'shutdown'] as const) {
@@ -477,9 +486,7 @@ describe('episode logging', () => {
       await call(3 * SECOND);
       await relay.end(kind);
 
-      expect(info).toEqual([
-        'stub child for static-token ended a tool call limit episode: it refused 3 tool calls.',
-      ]);
+      expect(info()).toEqual([episodeEnd(3)]);
     });
   }
 
@@ -489,6 +496,6 @@ describe('episode logging', () => {
     await call(0);
     await relay.end('shutdown');
 
-    expect(info).toEqual([]);
+    expect(info()).toEqual([]);
   });
 });

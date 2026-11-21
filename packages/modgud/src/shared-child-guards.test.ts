@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 
 import {
+  childStarts,
   createHarness,
   openRawSession,
   post,
@@ -8,6 +9,7 @@ import {
   toolCall,
   waitFor,
 } from './testing/listener-harness.ts';
+import { stderrOf, stoppedFor } from './testing/log-recorder.ts';
 
 const harness = createHarness();
 beforeEach(harness.setup);
@@ -15,13 +17,15 @@ afterEach(harness.teardown);
 
 // Guards against GrantRelay.cancel matching in-flight entries by caller id alone.
 test("a Session cannot cancel another Session's in-flight request by reusing its id", async () => {
-  const { lines, url } = await harness.start();
+  const { entries, url } = await harness.start();
   const owner = await openRawSession(url);
   const intruder = await openRawSession(url);
   const stream = requestOn(url, owner.headers, toolCall('caller-id', 'wait-for-cancel'));
   let childId: string | undefined;
   await waitFor(() => {
-    childId = lines.map((l) => / stderr: waiting for cancel (.+)$/u.exec(l)?.[1]).find(Boolean);
+    childId = stderrOf(entries)
+      .map((line) => /^waiting for cancel (.+)$/u.exec(line)?.[1])
+      .find(Boolean);
     return childId !== undefined;
   });
   const sent = await post(
@@ -35,21 +39,21 @@ test("a Session cannot cancel another Session's in-flight request by reusing its
   );
   expect(sent.status).toBe(202);
   await Bun.sleep(300);
-  expect(lines).not.toContain(`stub child for static-token stderr: cancelled ${childId}`);
+  expect(stderrOf(entries)).not.toContain(`cancelled ${childId}`);
   void stream;
 });
 
 // Guards against GrantRelay.cancel dropping waiting entries by caller id alone.
 test("a Session cannot drop another Session's waiting request by reusing its id", async () => {
-  const { lines, listener, url } = await harness.start({
+  const { entries, listener, url } = await harness.start({
     idleMinutes: 0.005,
     stubEnv: { STUB_COUNTER: `${harness.directory}/starts`, STUB_MODE: ',mute' },
   });
   const owner = await openRawSession(url);
   const intruder = await openRawSession(url);
-  await waitFor(() => lines.some((l) => l.endsWith(' stopped: idle.')));
+  await waitFor(() => stoppedFor(entries, 'idle'));
   const stream = requestOn(url, owner.headers, toolCall(9, 'echo', { text: 'mine' }));
-  await waitFor(() => lines.filter((l) => / started, pid /u.test(l)).length === 2);
+  await waitFor(() => childStarts(entries).length === 2);
   const sent = await post(
     url,
     intruder.headers,

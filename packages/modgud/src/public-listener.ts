@@ -156,14 +156,13 @@ export const createPublicListener = ({
 
   // The Upstream factory for a Service's runs for one Grant: a Child for a
   // process Service, a Link for an HTTP Service.
-  const upstreamFor = (service: ServiceConfig, grant: Grant, label: string) =>
+  const upstreamFor = (service: ServiceConfig, grant: Grant, relayLog: Log) =>
     service.kind === 'http'
       ? (events: UpstreamEvents, nextId: () => number) =>
           createLink({
             events,
             home,
-            label,
-            log,
+            log: relayLog,
             nextId,
             service,
             startTimeoutMs: limits.startTimeoutMs,
@@ -172,8 +171,7 @@ export const createPublicListener = ({
           command: service,
           environment: () =>
             childEnvironment({ identity: grant.identity, parent: parentEnvironment, service }),
-          label,
-          log,
+          log: relayLog,
           startTimeoutMs: limits.startTimeoutMs,
         });
 
@@ -183,16 +181,21 @@ export const createPublicListener = ({
     const key = relayKey(serviceName, grant.id);
     let relay = relays.get(key);
     if (relay === undefined) {
-      const label = `${serviceName} ${service.kind === 'http' ? 'link' : 'child'} for ${grantLabel(grant.id)}`;
+      // Every event of the relay, its Child or Link, and its tool-call limit
+      // carries the Service, the kind of upstream, and the Grant.
+      const relayLog = log.with({
+        grant: grantLabel(grant.id),
+        service: serviceName,
+        upstream: service.kind === 'http' ? 'link' : 'child',
+      });
       relay = new GrantRelay({
         grant: grant.id,
         idleTimeoutMs: service.idle_timeout_minutes * 60_000,
-        label,
         limits,
-        log,
+        log: relayLog,
         maxToolCallsPerMinute: service.max_tool_calls_per_minute,
         service: serviceName,
-        upstream: upstreamFor(service, grant, label),
+        upstream: upstreamFor(service, grant, relayLog),
       });
       relays.set(key, relay);
     }
@@ -216,7 +219,11 @@ export const createPublicListener = ({
       sessions.delete(session.id);
     }
     if (reason !== 'not initialized') {
-      log.info(`${session.service} session ${session.id.slice(0, 8)} ended: ${reason}.`);
+      log.info('{service} session {session} ended: {reason}.', {
+        reason,
+        service: session.service,
+        session: session.id.slice(0, 8),
+      });
     }
   };
 
@@ -241,7 +248,7 @@ export const createPublicListener = ({
       try {
         task();
       } catch (error) {
-        log.warn(`Could not ${name}: ${loggable(String(error))}`);
+        log.warn('Could not {task}: {error}', { error: loggable(String(error)), task: name });
       }
     }, intervalMs);
   const timers = [
@@ -339,9 +346,11 @@ export const createPublicListener = ({
       service: serviceName,
     });
     if (!relay.admit(session, config.public.max_sessions_per_grant)) {
-      log.warn(
-        `Refused a ${serviceName} session for ${caller}: ${String(config.public.max_sessions_per_grant)} are opening.`,
-      );
+      log.warn('Refused a {service} session for {caller}: {limit} are opening.', {
+        caller,
+        limit: config.public.max_sessions_per_grant,
+        service: serviceName,
+      });
       return jsonRpcError(503, -32_000, 'Too many sessions are opening', { 'Retry-After': '30' });
     }
     const readiness = await relay.ready();
@@ -365,9 +374,14 @@ export const createPublicListener = ({
     sessions.set(session.id, session);
     const origin = request.headers.get('origin');
     log.info(
-      `${serviceName} session ${session.id.slice(0, 8)} opened for ${caller}, Origin ${
-        origin === null ? 'none' : excerpt(origin, ORIGIN_LOG_LIMIT)
-      }, protocol ${excerpt(parsed.params.protocolVersion, PROTOCOL_LOG_LIMIT)}.`,
+      '{service} session {session} opened for {caller}, Origin {origin}, protocol {protocol}.',
+      {
+        caller,
+        origin: origin === null ? 'none' : excerpt(origin, ORIGIN_LOG_LIMIT),
+        protocol: excerpt(parsed.params.protocolVersion, PROTOCOL_LOG_LIMIT),
+        service: serviceName,
+        session: session.id.slice(0, 8),
+      },
     );
     return response;
   };
@@ -383,12 +397,11 @@ export const createPublicListener = ({
       return;
     }
     if (authentication.result === 'valid') {
-      log.warn(
-        `Refused a ${serviceName} request from ${authentication.caller}: Origin ${excerpt(
-          origin,
-          ORIGIN_LOG_LIMIT,
-        )} is not allowed.`,
-      );
+      log.warn('Refused a {service} request from {caller}: Origin {origin} is not allowed.', {
+        caller: authentication.caller,
+        origin: excerpt(origin, ORIGIN_LOG_LIMIT),
+        service: serviceName,
+      });
     }
   };
 

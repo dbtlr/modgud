@@ -22,6 +22,13 @@ import {
   waitFor,
 } from './testing/listener-harness.ts';
 import {
+  entriesOf,
+  everything,
+  sessionsEnded,
+  stderrOf,
+  stoppedFor,
+} from './testing/log-recorder.ts';
+import {
   httpEvent,
   httpId,
   httpMethod,
@@ -30,6 +37,28 @@ import {
   startStubHttpService,
 } from './testing/stub-http-service.ts';
 import type { StubHttpRequest } from './testing/stub-http-service.ts';
+
+const STDERR = '{service} {upstream} for {grant} stderr: {line}';
+
+// The event of a request refused for its Origin.
+const originRefused = (caller: string) => ({
+  fields: { caller, origin: 'https://evil.test', service: 'stub' },
+  level: 'warn' as const,
+  message: 'Refused a {service} request from {caller}: Origin {origin} is not allowed.',
+});
+
+// The event of a Session opened for a caller.
+const sessionOpened = (caller: string, origin: string) => ({
+  fields: {
+    caller,
+    origin,
+    protocol: '2025-11-25',
+    service: 'stub',
+    session: expect.stringMatching(/^\w{8}$/u),
+  },
+  level: 'info' as const,
+  message: '{service} session {session} opened for {caller}, Origin {origin}, protocol {protocol}.',
+});
 
 const harness = createHarness();
 const { openTestStore, start } = harness;
@@ -140,22 +169,38 @@ describe('a Caller with the harness token', () => {
   });
 
   test("logs the Child's stderr, tagged with its Service and Grant", async () => {
-    const { lines, store, url } = await start();
+    const { entries, store, url } = await start();
     const { authorizationId, accessToken } = connectOAuthClient(store);
     await connect(url);
     await connect(url, { token: accessToken });
 
     await waitFor(
-      () => lines.filter((line) => line.endsWith('stderr: stub-service started')).length === 2,
+      () => entries.filter((entry) => entry.fields.line === 'stub-service started').length === 2,
     );
-    expect(lines).toContainEqual('stub child for static-token stderr: stub-service started');
-    expect(lines).toContainEqual(
-      `stub child for authorization ${authorizationId.slice(0, 8)} stderr: stub-service started`,
-    );
+    expect(entries).toContainEqual({
+      fields: {
+        grant: 'static-token',
+        line: 'stub-service started',
+        service: 'stub',
+        upstream: 'child',
+      },
+      level: 'info',
+      message: STDERR,
+    });
+    expect(entries).toContainEqual({
+      fields: {
+        grant: `authorization ${authorizationId.slice(0, 8)}`,
+        line: 'stub-service started',
+        service: 'stub',
+        upstream: 'child',
+      },
+      level: 'info',
+      message: STDERR,
+    });
   });
 
   test("logs the Child's stderr escaped and cut to 2000 code points", async () => {
-    const { lines, url } = await start();
+    const { entries, url } = await start();
     const { client } = await connect(url);
 
     await client.callTool({
@@ -163,22 +208,20 @@ describe('a Caller with the harness token', () => {
       name: 'stderr',
     });
 
-    await waitFor(() => lines.some((line) => line.includes('stderr: bell')));
-    expect(lines).toContainEqual(
-      `stub child for static-token stderr: bell\\u0007${'b'.repeat(1995)}`,
-    );
+    await waitFor(() => stderrOf(entries).some((line) => line.startsWith('bell')));
+    expect(stderrOf(entries)).toContain(`bell\\u0007${'b'.repeat(1995)}`);
   });
 });
 
 describe('logging', () => {
-  test('a Child response id with a newline stays on one log line', async () => {
-    const { lines, url } = await start();
+  test('a Child response id with a newline is logged escaped', async () => {
+    const { entries, url } = await start();
     const { client } = await connect(url);
 
     await client.callTool({ arguments: {}, name: 'unmatched-response' });
 
-    await waitFor(() => lines.some((line) => line.includes('forged')));
-    expect(lines.filter((line) => line.includes('\n'))).toEqual([]);
+    await waitFor(() => entries.some((entry) => String(entry.fields.rpc).includes('forged')));
+    expect(entries.filter((entry) => String(entry.fields.rpc).includes('\n'))).toEqual([]);
   });
 });
 
@@ -188,7 +231,7 @@ describe('a Child that closes its stdin', () => {
     const record = (reason: unknown) => unhandled.push(reason);
     process.on('unhandledRejection', record);
     try {
-      const { lines, url } = await start();
+      const { entries, url } = await start();
       const { client } = await connect(url);
       await client.callTool({ arguments: {}, name: 'close-stdin' });
       await Bun.sleep(100);
@@ -204,7 +247,9 @@ describe('a Child that closes its stdin', () => {
         }
       };
       void lost();
-      await waitFor(() => lines.some((line) => line.includes('could not write to the Child')));
+      await waitFor(() =>
+        entries.some((entry) => entry.message.includes('could not write to the Child')),
+      );
       await Bun.sleep(100);
 
       expect(unhandled).toEqual([]);
@@ -232,11 +277,11 @@ describe('ending a Session', () => {
   });
 
   test('an idle Session is ended after its timeout, and later requests on it get 404', async () => {
-    const { lines, listener, url } = await start({ sessionIdleMinutes: 0.005 });
+    const { entries, listener, url } = await start({ sessionIdleMinutes: 0.005 });
     const { transport } = await connect(url);
 
     await waitFor(() => listener.sessionCount() === 0);
-    expect(lines.some((line) => line.endsWith('ended: idle.'))).toBe(true);
+    expect(sessionsEnded(entries, 'idle').length > 0).toBe(true);
     const response = await post(url, {
       Authorization: `Bearer ${TOKEN}`,
       'Mcp-Session-Id': transport.sessionId ?? '',
@@ -245,7 +290,7 @@ describe('ending a Session', () => {
   });
 
   test('a cancelled call the Child never answers does not keep the Child past its idle timeout', async () => {
-    const { lines, listener, url } = await start({ idleMinutes: 0.005 });
+    const { entries, listener, url } = await start({ idleMinutes: 0.005 });
     const { client } = await connect(url);
 
     let cancelled = false;
@@ -256,26 +301,24 @@ describe('ending a Session', () => {
     }
 
     expect(cancelled).toBe(true);
-    await waitFor(() =>
-      lines.some((line) => line.endsWith('child for static-token stopped: idle.')),
-    );
+    await waitFor(() => stoppedFor(entries, 'idle'));
     expect(listener.sessionCount()).toBe(1);
   });
 
   test('an uncancelled call the Child never answers does not keep the Child past its idle timeout, and gets an error', async () => {
-    const { lines, listener, url } = await start({ idleMinutes: 0.005 });
+    const { entries, listener, url } = await start({ idleMinutes: 0.005 });
     const { client } = await connect(url);
 
     const call = client.callTool({ arguments: {}, name: 'slow' });
 
     expect(await rejectionOf(call)).toContain('The Service stopped before it answered');
-    expect(lines.some((line) => line.endsWith('child for static-token stopped: idle.'))).toBe(true);
+    expect(stoppedFor(entries, 'idle')).toBe(true);
     expect(listener.sessionCount()).toBe(1);
   });
 
   test('a Child that never answers initialize is stopped within the bound, and the initialize gets 502', async () => {
     const marker = `marker-${crypto.randomUUID()}`;
-    const { lines, listener, url } = await start({
+    const { entries, listener, url } = await start({
       childLimits: { startTimeoutMs: 200 },
       marker,
       stubEnv: { STUB_MODE: 'mute' },
@@ -290,18 +333,18 @@ describe('ending a Session', () => {
       jsonrpc: '2.0',
     });
     expect(listener.sessionCount()).toBe(0);
-    expect(lines).toContainEqual('stub child for static-token stopped: initialize timed out.');
+    expect(stoppedFor(entries, 'initialize timed out')).toBe(true);
     await waitFor(async () => (await processesWith(marker)).length === 0);
   });
 
   test('a Child message over the size limit stops the Child and fails the call, and the Session survives', async () => {
-    const { lines, listener, url } = await start({ childLimits: { backoffBaseMs: 50 } });
+    const { entries, listener, url } = await start({ childLimits: { backoffBaseMs: 50 } });
     const { client } = await connect(url);
 
     const call = client.callTool({ arguments: {}, name: 'oversized' });
 
     expect(await rejectionOf(call)).toContain('The Service stopped before it answered');
-    expect(lines).toContainEqual('stub child for static-token stopped: unreadable output.');
+    expect(stoppedFor(entries, 'unreadable output')).toBe(true);
     expect(listener.sessionCount()).toBe(1);
     await Bun.sleep(100);
     const result = await client.callTool({ arguments: { text: 'still here' }, name: 'echo' });
@@ -353,7 +396,7 @@ describe('ending a Session', () => {
     try {
       const instance = await start({ parentEnvironment });
       race.listener = instance.listener;
-      const { lines, url } = instance;
+      const { entries, url } = instance;
 
       const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
       await race.closed;
@@ -363,20 +406,20 @@ describe('ending a Session', () => {
       expect(race.childAlive).toBe(false);
       expect(response.status).toBe(503);
       expect(instance.listener.sessionCount()).toBe(0);
-      expect(lines.some((line) => line.endsWith('ended: shutdown.'))).toBe(true);
+      expect(sessionsEnded(entries, 'shutdown').length > 0).toBe(true);
     } finally {
       spawn.mockRestore();
     }
   });
 
   test('close does not resolve until a Child already stopping has exited', async () => {
-    const { lines, listener, url } = await start({
+    const { entries, listener, url } = await start({
       idleMinutes: 0.005,
       stubEnv: { STUB_MODE: 'ignore-sigterm' },
     });
     const { client } = await connect(url);
     const pid = Number(firstText(await client.callTool({ arguments: {}, name: 'pid' })));
-    await waitFor(() => lines.some((line) => line.endsWith('stopped: idle.')));
+    await waitFor(() => stoppedFor(entries, 'idle'));
     expect(isAlive(pid)).toBe(true);
 
     await listener.close();
@@ -465,7 +508,7 @@ describe('an HTTP Service, through its Link', () => {
   });
 
   test('a Service that pings and logs before it answers initialize still starts, and its ping is answered', async () => {
-    const { lines, stub, url } = await startLinked({
+    const { entries, stub, url } = await startLinked({
       bearer: LINK_SECRET,
       stub: {
         respond: (request) =>
@@ -497,14 +540,16 @@ describe('an HTTP Service, through its Link', () => {
             JSON.stringify(request.message) === JSON.stringify(rpcResult('service-ping')),
         ),
       );
-      expect(lines.some((line) => line.includes('notifications/message'))).toBe(true);
+      expect(
+        entries.some((entry) => String(entry.fields.rpc).includes('notifications/message')),
+      ).toBe(true);
     } finally {
       await stub.server.stop(true);
     }
   });
 
   test("a Link's start deadline is the Grant's startTimeoutMs", async () => {
-    const { lines, stub, url } = await startLinked({
+    const { entries, stub, url } = await startLinked({
       bearer: LINK_SECRET,
       childLimits: { startTimeoutMs: 200 },
       stub: {
@@ -518,7 +563,7 @@ describe('an HTTP Service, through its Link', () => {
 
       expect(response.status).toBe(502);
       expect(performance.now() - started).toBeLessThan(2500);
-      expect(lines.some((line) => line.includes('start deadline exceeded'))).toBe(true);
+      expect(stoppedFor(entries, 'start deadline exceeded')).toBe(true);
     } finally {
       await stub.server.stop(true);
     }
@@ -559,7 +604,7 @@ describe('an HTTP Service, through its Link', () => {
   });
 
   test('a missing bearer file fails the initialize with 502, and the log names the Service and the file', async () => {
-    const { bearerFile, lines, listener, stub, url } = await startLinked();
+    const { bearerFile, entries, listener, stub, url } = await startLinked();
     try {
       const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
 
@@ -567,23 +612,27 @@ describe('an HTTP Service, through its Link', () => {
       expect(listener.sessionCount()).toBe(0);
       expect(stub.requests).toEqual([]);
       expect(
-        lines.some(
-          (line) => line.includes('stub link for static-token') && line.includes(bearerFile),
+        entries.some(
+          (entry) =>
+            entry.fields.service === 'stub' &&
+            entry.fields.upstream === 'link' &&
+            entry.fields.grant === 'static-token' &&
+            entry.fields.path === bearerFile,
         ),
       ).toBe(true);
-      expect(lines.join('\n')).not.toContain(LINK_SECRET);
+      expect(everything(entries)).not.toContain(LINK_SECRET);
     } finally {
       await stub.server.stop(true);
     }
   });
 
   test('an idle Link stops, and the next request starts a new Link that initializes again', async () => {
-    const { lines, stub, url } = await startLinked({ bearer: LINK_SECRET, idleMinutes: 0.005 });
+    const { entries, stub, url } = await startLinked({ bearer: LINK_SECRET, idleMinutes: 0.005 });
     try {
       const { client } = await connect(url);
       expect(initializes(stub.requests)).toBe(1);
 
-      await waitFor(() => lines.includes('stub link for static-token stopped: idle.'));
+      await waitFor(() => stoppedFor(entries, 'idle'));
       // The DELETE reaches the stub a moment after the Link logs its stop.
       await waitFor(() => stub.requests.at(-1)?.method === 'DELETE');
 
@@ -591,9 +640,11 @@ describe('an HTTP Service, through its Link', () => {
         'again',
       );
       expect(initializes(stub.requests)).toBe(2);
-      expect(lines.filter((line) => line === 'stub link for static-token started.')).toHaveLength(
-        2,
-      );
+      expect(
+        entriesOf(entries, '{service} {upstream} for {grant} started.').filter(
+          (entry) => entry.fields.upstream === 'link',
+        ),
+      ).toHaveLength(2);
     } finally {
       await stub.server.stop(true);
     }
@@ -682,33 +733,41 @@ describe('refusals', () => {
   });
 
   test('warns of a refused Origin only for a caller with a valid credential', async () => {
-    const { lines, store, url } = await start({ origins: ['https://claude.ai'] });
+    const { entries, store, url } = await start({ origins: ['https://claude.ai'] });
     const { accessToken, authorizationId, clientId } = connectOAuthClient(store);
     const foreign = { Origin: 'https://evil.test' };
 
     await post(url, foreign);
     await post(url, { ...foreign, Authorization: 'Bearer wrong' });
-    expect(lines).toEqual([]);
+    expect(entries).toEqual([]);
     const staticToken = await post(url, { ...foreign, Authorization: `Bearer ${TOKEN}` });
     const oauth = await post(url, { ...foreign, Authorization: `Bearer ${accessToken}` });
 
     expect(staticToken.status).toBe(403);
     expect(oauth.status).toBe(403);
-    expect(lines).toEqual([
-      'Refused a stub request from the static bearer token: Origin https://evil.test is not allowed.',
-      `Refused a stub request from client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}: Origin https://evil.test is not allowed.`,
+    expect(entries).toEqual([
+      originRefused('the static bearer token'),
+      originRefused(`client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}`),
     ]);
   });
 
   test('a refused Origin is logged escaped and cut to 200 code points', async () => {
-    const { lines, url } = await start({ origins: ['https://claude.ai'] });
+    const { entries, url } = await start({ origins: ['https://claude.ai'] });
     const origin = `https://evil.test\u0085${'a'.repeat(300)}`;
 
     const response = await post(url, { Authorization: `Bearer ${TOKEN}`, Origin: origin });
 
     expect(response.status).toBe(403);
-    expect(lines).toEqual([
-      `Refused a stub request from the static bearer token: Origin https://evil.test\\u0085${'a'.repeat(182)} is not allowed.`,
+    expect(entries).toEqual([
+      {
+        fields: {
+          caller: 'the static bearer token',
+          origin: `https://evil.test\\u0085${'a'.repeat(182)}`,
+          service: 'stub',
+        },
+        level: 'warn',
+        message: 'Refused a {service} request from {caller}: Origin {origin} is not allowed.',
+      },
     ]);
   });
 
@@ -742,7 +801,7 @@ describe('a Caller with an OAuth access token', () => {
   });
 
   test('logs which client opened a Session, with its Origin and requested protocol revision', async () => {
-    const { lines, store, url } = await start({ origins: ['https://claude.ai'] });
+    const { entries, store, url } = await start({ origins: ['https://claude.ai'] });
     const { accessToken, authorizationId, clientId } = connectOAuthClient(store);
 
     const oauth = await post(url, {
@@ -753,19 +812,14 @@ describe('a Caller with an OAuth access token', () => {
 
     expect(oauth.status).toBe(200);
     expect(staticToken.status).toBe(200);
-    const opened = lines.filter((line) => line.includes(' opened'));
-    expect(opened).toEqual([
-      expect.stringMatching(
-        new RegExp(
-          `^stub session \\w{8} opened for client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}, Origin https://claude\\.ai, protocol 2025-11-25\\.$`,
-          'u',
-        ),
+    expect(entries.filter((entry) => entry.message.includes(' opened for '))).toEqual([
+      sessionOpened(
+        `client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}`,
+        'https://claude.ai',
       ),
-      expect.stringMatching(
-        /^stub session \w{8} opened for the static bearer token, Origin none, protocol 2025-11-25\.$/u,
-      ),
+      sessionOpened('the static bearer token', 'none'),
     ]);
-    expect(lines.join('\n')).not.toContain(accessToken);
+    expect(everything(entries)).not.toContain(accessToken);
     await oauth.body?.cancel();
     await staticToken.body?.cancel();
   });
@@ -865,7 +919,7 @@ describe('a Session bound to its credential source', () => {
 
 describe('ending the Sessions of an authorization', () => {
   test('modgud revoke from another store handle ends its Sessions, streams, and Children within 10 seconds', async () => {
-    const { lines, listener, store, url } = await start();
+    const { entries, listener, store, url } = await start();
     const { accessToken } = connectOAuthClient(store);
     const staticSession = await connect(url);
     // A raw Session, so the test holds its only GET stream.
@@ -902,7 +956,7 @@ describe('ending the Sessions of an authorization', () => {
     expect(closed.status).toBe(200);
     expect(await closed.text()).toBe('');
     await waitFor(() => !isAlive(pid));
-    expect(lines.some((line) => line.endsWith('ended: authorization ended.'))).toBe(true);
+    expect(sessionsEnded(entries, 'authorization ended').length > 0).toBe(true);
     const staticResult = await staticSession.client.callTool({
       arguments: { text: 'still here' },
       name: 'echo',

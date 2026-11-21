@@ -1,10 +1,14 @@
+import type { LogFields } from '@loomcli/core';
 import type { LoggingError } from '@loomcli/plugins/logging';
 
 // The part of Loom's log that the listeners use. `serve` passes its action's
 // log, and Loom's logging plugin records each event; tests pass a recorder.
+// A message is a constant template with `{name}` placeholders, and each value
+// goes in `fields`; `with` returns a Log whose every event carries its fields.
 export type Log = {
-  info: (message: string) => void;
-  warn: (message: string) => void;
+  info: (message: string, fields?: LogFields) => void;
+  warn: (message: string, fields?: LogFields) => void;
+  with: (fields: LogFields) => Log;
 };
 
 // C0 controls (below 32), DEL (127), and C1 controls (128 to 159).

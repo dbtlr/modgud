@@ -19,6 +19,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { sha256Hex } from '../src/bearer.ts';
 import { childEnvironment } from '../src/child-environment.ts';
 import { parseConfig } from '../src/config.ts';
+import type { Log } from '../src/log.ts';
 import { createPublicListener } from '../src/public-listener.ts';
 import { openStore } from '../src/store.ts';
 
@@ -35,6 +36,13 @@ const [command, ...args] = positionals;
 if (command === undefined || values.tool === undefined) {
   throw new Error('Usage: bench-overhead.ts --tool <name> [--calls N] -- <command> [args...]');
 }
+// Only a warning reaches the console; `with` binds nothing the console shows.
+const benchLog: Log = {
+  info: () => undefined,
+  warn: (message) => console.error(message),
+  with: () => benchLog,
+};
+
 const tool = values.tool;
 const parsedArguments: unknown = JSON.parse(values.arguments);
 if (
@@ -122,7 +130,7 @@ const proxied = await (async () => {
     config,
     // The bench's Service is a process Service, which reads no bearer file.
     home: storeDirectory,
-    log: { info: () => undefined, warn: (line) => console.error(line) },
+    log: benchLog,
     parentEnvironment: process.env,
     store,
   });

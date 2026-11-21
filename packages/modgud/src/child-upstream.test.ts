@@ -2,6 +2,9 @@ import { afterEach, expect, test } from 'bun:test';
 
 import { createChildUpstream } from './child-upstream.ts';
 import { waitFor } from './testing/listener-harness.ts';
+import { createLogRecorder } from './testing/log-recorder.ts';
+
+const STDERR = '{service} {upstream} for {grant} stderr: {line}';
 
 const leftover: number[] = [];
 
@@ -24,7 +27,7 @@ afterEach(() => {
 });
 
 test('stopped waits until the process a wrapped Child started is gone', async () => {
-  const lines: string[] = [];
+  const { entries, log } = createLogRecorder();
   // The wrapper dies on SIGTERM; the process it started reports its pid on
   // stderr, ignores SIGTERM, and never reads stdin.
   const upstream = createChildUpstream({
@@ -33,17 +36,19 @@ test('stopped waits until the process a wrapped Child started is gone', async ()
       command: '/bin/sh',
     },
     environment: () => ({ PATH: process.env.PATH ?? '' }),
-    label: 'wrapped',
-    log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
+    log: log.with({ grant: 'g', service: 'wrapped', upstream: 'child' }),
     startTimeoutMs: 10_000,
   })(
     { onMessage: () => undefined, onRequestFailed: () => undefined, onStopped: () => undefined },
     () => 1,
   );
   void upstream.start();
-  const prefix = 'wrapped stderr: ';
-  await waitFor(() => lines.some((line) => line.startsWith(prefix)));
-  const pid = Number(lines.find((line) => line.startsWith(prefix))?.slice(prefix.length));
+  const stderr = () => entries.filter((entry) => entry.message === STDERR);
+  await waitFor(() => stderr().length > 0);
+  const [first] = stderr();
+  // The Child's events carry the fields its Grant's log was bound with.
+  expect(first?.fields).toMatchObject({ grant: 'g', service: 'wrapped', upstream: 'child' });
+  const pid = Number(first?.fields.line);
   leftover.push(pid);
 
   upstream.stop('shutdown');

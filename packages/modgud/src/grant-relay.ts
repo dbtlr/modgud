@@ -111,8 +111,6 @@ const sameId = (a: RequestId, b: RequestId) => typeof a === typeof b && a === b;
 
 export type GrantRelayOptions = {
   grant: string;
-  // The Service's log label, such as "norn child for <grant>".
-  label: string;
   // How long a started run may pass without a message before it is stopped.
   idleTimeoutMs: number;
   limits: GrantLimits;
@@ -166,15 +164,10 @@ export class GrantRelay {
       now: () => performance.now(),
     });
     this.#toolCalls = new ToolCallLimit({
-      label: options.label,
       limit: options.maxToolCallsPerMinute,
       log: options.log,
       now: options.now ?? (() => performance.now()),
     });
-  }
-
-  get #label() {
-    return this.#options.label;
   }
 
   // Adds a Session that is opening. At the limit, it first ends the Grant's
@@ -232,9 +225,9 @@ export class GrantRelay {
       this.#waiting.length + this.#inFlight.size + this.#held.size >=
       this.#limits.requestsPerGrant
     ) {
-      this.#log.warn(
-        `${this.#label} refused a request: ${String(this.#limits.requestsPerGrant)} are open.`,
-      );
+      this.#log.warn('{service} {upstream} for {grant} refused a request: {limit} are open.', {
+        limit: this.#limits.requestsPerGrant,
+      });
       session.deliver(errorResponse(message.id, ERRORS.tooManyRequests), { activity: true });
       return;
     }
@@ -516,7 +509,10 @@ export class GrantRelay {
     const entry = typeof id === 'number' ? this.#inFlight.get(id) : undefined;
     if (entry === undefined) {
       this.#log.warn(
-        `${this.#label} sent a response to no open request: id ${excerpt(JSON.stringify(id), CHILD_LOG_LIMIT)}`,
+        '{service} {upstream} for {grant} sent a response to no open request: id {rpc}',
+        {
+          rpc: excerpt(JSON.stringify(id), CHILD_LOG_LIMIT),
+        },
       );
       return;
     }
@@ -533,7 +529,10 @@ export class GrantRelay {
       return;
     }
     this.#log.info(
-      `${this.#label} asked for ${excerpt(request.method, 200)}, which Modgud does not offer.`,
+      '{service} {upstream} for {grant} asked for {method}, which Modgud does not offer.',
+      {
+        method: excerpt(request.method, 200),
+      },
     );
     run.upstream.answer(errorResponse(request.id, ERRORS.methodNotFound));
   }
@@ -566,9 +565,9 @@ export class GrantRelay {
         return;
       }
       default: {
-        this.#log.info(
-          `${this.#label} notification: ${excerpt(JSON.stringify(message), CHILD_LOG_LIMIT)}`,
-        );
+        this.#log.info('{service} {upstream} for {grant} notification: {rpc}', {
+          rpc: excerpt(JSON.stringify(message), CHILD_LOG_LIMIT),
+        });
       }
     }
   }

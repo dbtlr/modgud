@@ -33,8 +33,7 @@ export type ChildUpstreamOptions = {
   command: Pick<ProcessServiceConfig, 'args' | 'command' | 'cwd'>;
   // The Child's environment, built at each start.
   environment: () => Record<string, string>;
-  // The Service's log label, such as "norn child for <grant>".
-  label: string;
+  // The log of the Child's Grant, bound to its Service, `child`, and Grant.
   log: Log;
   // How long the Child has to answer Modgud's `initialize`.
   startTimeoutMs: number;
@@ -72,7 +71,7 @@ class ChildUpstream implements Upstream {
     this.#events = events;
     this.stopped = this.#stoppedGroup.promise;
     const { args, command, cwd } = options.command;
-    const { label, log } = options;
+    const { log } = options;
     this.#process = new Child({
       args,
       command,
@@ -80,17 +79,23 @@ class ChildUpstream implements Upstream {
       environment: options.environment(),
       onExit: (status) => this.#stopItself(describeExit(status)),
       onFatal: (error) => {
-        log.warn(`${label} unreadable output: ${loggable(error.message)}`);
+        log.warn('{service} {upstream} for {grant} unreadable output: {error}', {
+          error: loggable(error.message),
+        });
         this.#stopItself('unreadable output');
       },
       onMessage: (message) => this.#fromChild(message),
       onStderr: (line) => {
         if (line.trim() !== '') {
-          log.info(`${label} stderr: ${excerpt(line, CHILD_LOG_LIMIT)}`);
+          log.info('{service} {upstream} for {grant} stderr: {line}', {
+            line: excerpt(line, CHILD_LOG_LIMIT),
+          });
         }
       },
       onUnreadable: (error) => {
-        log.warn(`${label} unreadable message: ${loggable(error.message)}`);
+        log.warn('{service} {upstream} for {grant} unreadable message: {error}', {
+          error: loggable(error.message),
+        });
       },
     });
     this.#initializeId = nextId();
@@ -99,19 +104,21 @@ class ChildUpstream implements Upstream {
   // Spawns the Child and sends `initialize`. It resolves once the Child has
   // answered it with a result Modgud can serve, or failed.
   start(): Promise<StartResult> {
-    const { label, log } = this.#options;
+    const { log } = this.#options;
     if (this.#stopping) {
       return Promise.resolve({ kind: 'failed', reason: 'stopped' });
     }
     try {
       this.#process.start();
     } catch (error) {
-      log.warn(`${label} could not start: ${loggable(String(error))}`);
+      log.warn('{service} {upstream} for {grant} could not start: {error}', {
+        error: loggable(String(error)),
+      });
       this.#stopping = true;
       this.#stoppedGroup.resolve();
       return Promise.resolve({ kind: 'failed', reason: 'could not start' });
     }
-    log.info(`${label} started, pid ${String(this.#process.pid)}.`);
+    log.info('{service} {upstream} for {grant} started, pid {pid}.', { pid: this.#process.pid });
     this.#initializeTimer = setTimeout(
       () => this.#failStart('initialize timed out'),
       this.#options.startTimeoutMs,
@@ -161,7 +168,10 @@ class ChildUpstream implements Upstream {
       return true;
     } catch (error) {
       this.#options.log.warn(
-        `${this.#options.label} could not write to the Child: ${loggable(String(error))}`,
+        '{service} {upstream} for {grant} could not write to the Child: {error}',
+        {
+          error: loggable(String(error)),
+        },
       );
       return false;
     }
@@ -175,7 +185,7 @@ class ChildUpstream implements Upstream {
     }
     this.#stopping = true;
     clearTimeout(this.#initializeTimer);
-    this.#options.log.info(`${this.#options.label} stopped: ${reason}.`);
+    this.#options.log.info('{service} {upstream} for {grant} stopped: {reason}.', { reason });
     if (!this.#initialized) {
       this.#started.resolve({ kind: 'failed', reason });
     }
@@ -230,9 +240,9 @@ class ChildUpstream implements Upstream {
       ? parseChildInitializeResult(message.result)
       : undefined;
     if (result === undefined) {
-      this.#options.log.warn(
-        `${this.#options.label} answered initialize with ${excerpt(JSON.stringify(message), CHILD_LOG_LIMIT)}`,
-      );
+      this.#options.log.warn('{service} {upstream} for {grant} answered initialize with {rpc}', {
+        rpc: excerpt(JSON.stringify(message), CHILD_LOG_LIMIT),
+      });
       this.#failStart(
         isJSONRPCErrorResponse(message) ? 'initialize failed' : 'unsupported initialize result',
       );

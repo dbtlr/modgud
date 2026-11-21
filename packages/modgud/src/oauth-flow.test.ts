@@ -22,13 +22,14 @@ import { createAdminListener } from './admin-listener.ts';
 import type { AdminListener } from './admin-listener.ts';
 import { sha256Hex } from './bearer.ts';
 import { parseConfig } from './config.ts';
-import type { Log } from './log.ts';
 import { createMetadataDocumentFetcher } from './metadata-document.ts';
 import type { FetchMetadataDocument } from './metadata-document.ts';
 import { createPublicListener } from './public-listener.ts';
 import type { PublicListener } from './public-listener.ts';
 import { openStore } from './store.ts';
 import type { Store } from './store.ts';
+import { createLogRecorder, entriesOf, everything } from './testing/log-recorder.ts';
+import type { LogEntry } from './testing/log-recorder.ts';
 
 // The whole OAuth flow, driven by the MCP SDK's own OAuth client against an
 // in-process Public listener and Admin listener serving the stub Service:
@@ -62,7 +63,7 @@ const config = parseConfig(`
 
 type Running = {
   admin: AdminListener;
-  lines: string[];
+  entries: LogEntry[];
   publicListener: PublicListener;
   store: Store;
 };
@@ -87,8 +88,7 @@ afterEach(async () => {
 });
 
 const start = async (fetchMetadataDocument?: FetchMetadataDocument): Promise<Running> => {
-  const lines: string[] = [];
-  const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
+  const { entries, log } = createLogRecorder();
   const store = await openStore({
     maxTokenLifetimeDays: 30,
     path: join(directory, 'modgud.sqlite'),
@@ -102,7 +102,7 @@ const start = async (fetchMetadataDocument?: FetchMetadataDocument): Promise<Run
       store,
       ...(fetchMetadataDocument === undefined ? {} : { fetchMetadataDocument }),
     }),
-    lines,
+    entries,
     publicListener: createPublicListener({
       authorizationSweepMs: 50,
       config,
@@ -291,12 +291,21 @@ test('a client registers, is approved with a Pairing code, calls the Service, re
   // oxlint-disable-next-line typescript/await-thenable -- bun:test's rejects is awaitable
   await expect(echo(client, 'revoked')).rejects.toThrow();
 
-  const log = instance.lines.join('\n');
-  expect(log).toContain('Registered client');
-  expect(log).toMatch(/Approved client [\w-]{8} \(Flow test client\) as authorization [\w-]{8}\./u);
-  expect(log).toContain('ended: authorization ended');
+  const { entries } = instance;
+  expect(entriesOf(entries, 'Registered client {client}.')).toHaveLength(1);
+  expect(
+    entriesOf(entries, 'Approved client {client} as authorization {authorization}.').map(
+      (entry) => entry.fields.clientName,
+    ),
+  ).toEqual(['Flow test client']);
+  expect(
+    entriesOf(entries, '{service} session {session} ended: {reason}.').map(
+      (entry) => entry.fields.reason,
+    ),
+  ).toContain('authorization ended');
+  const logged = everything(entries);
   for (const secret of [before?.access_token, before?.refresh_token, saved.tokens?.access_token]) {
-    expect(log).not.toContain(secret ?? 'unset');
+    expect(logged).not.toContain(secret ?? 'unset');
   }
 });
 
@@ -318,7 +327,7 @@ test('a client identified by its metadata document pairs without registering, an
       };
     },
     interfaceAddresses: () => [],
-    log: { info: () => undefined, warn: () => undefined },
+    log: createLogRecorder().log,
     resolve: async () => [{ address: '93.184.215.14', family: 4 }],
   });
   const instance = await start(fetchMetadataDocument);
@@ -332,5 +341,5 @@ test('a client identified by its metadata document pairs without registering, an
   expect(html).toContain('Metadata client');
   const { client } = await connect(provider, network);
   expect(await echo(client, 'by metadata')).toEqual([{ text: 'by metadata', type: 'text' }]);
-  expect(instance.lines.join('\n')).not.toContain('Registered client');
+  expect(entriesOf(instance.entries, 'Registered client {client}.')).toEqual([]);
 });

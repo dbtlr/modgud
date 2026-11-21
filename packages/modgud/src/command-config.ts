@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 
-import type { Host, Out } from '@loomcli/core';
+import type { Host, LogFields, Out } from '@loomcli/core';
 
 import { defaultConfigPath, readConfig, resolveStorePath, serviceResource } from './config.ts';
 import type { Config } from './config.ts';
@@ -21,9 +21,11 @@ export const configOption = {
 // nobody reads `out`. A fatal message reaches the log through Loom itself.
 type Report = { log: Pick<Log, 'warn'>; out: Pick<Out, 'fatal' | 'warn'> };
 
-const warnBoth = ({ log, out }: Report, message: string) => {
-  log.warn(message);
-  void out.warn(message);
+// The log gets a constant template with the warning as a field, and `out` the
+// sentence filled in.
+const warnBoth = ({ log, out }: Report, template: string, fields: LogFields, sentence: string) => {
+  log.warn(template, fields);
+  void out.warn(sentence);
 };
 
 // Reads the configuration file `--config` names, or the default one, and ends
@@ -42,7 +44,8 @@ export const loadConfig = async (
     return report.out.fatal(loggable(`Invalid configuration in ${path}: ${describeError(error)}`));
   }
   for (const warning of loaded.warnings) {
-    warnBoth(report, loggable(`In ${path}: ${warning}`));
+    const sentence = loggable(`In ${path}: ${warning}`);
+    warnBoth(report, 'In {path}: {warning}', { path, warning: loggable(warning) }, sentence);
   }
   return loaded.config;
 };
@@ -59,7 +62,8 @@ export const openConfiguredStore = async (
       maxTokenLifetimeDays: config.harness.max_token_lifetime_days,
       path: resolveStorePath(config, host.home),
       resource: serviceResource(config, config.harness.service),
-      warn: (message) => warnBoth(report, loggable(message)),
+      warn: (message) =>
+        warnBoth(report, '{warning}', { warning: loggable(message) }, loggable(message)),
     });
   } catch (error) {
     return report.out.fatal(loggable(`Could not open the store: ${describeError(error)}`));

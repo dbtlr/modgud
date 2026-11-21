@@ -43,26 +43,14 @@ export type ToolCallDecision = { kind: 'send' } | { kind: 'refuse'; retryAfterSe
 // not reset it.
 export class ToolCallLimit {
   readonly limit: number;
-  readonly #label: string;
   readonly #log: Log;
   readonly #now: () => number;
   readonly #window: ReturnType<typeof createWindowLimit>;
   // Set from the refusal that starts an episode until the episode ends.
   #episode: { refused: number; lastRefusalAt: number } | undefined;
 
-  constructor({
-    label,
-    limit,
-    log,
-    now,
-  }: {
-    label: string;
-    limit: number;
-    log: Log;
-    now: () => number;
-  }) {
+  constructor({ limit, log, now }: { limit: number; log: Log; now: () => number }) {
     this.limit = limit;
-    this.#label = label;
     this.#log = log;
     this.#now = now;
     this.#window = createWindowLimit({ limit, now, windowMs: WINDOW_MS });
@@ -77,7 +65,8 @@ export class ToolCallLimit {
       if (this.#episode === undefined) {
         this.#episode = { lastRefusalAt: now, refused: 0 };
         this.#log.warn(
-          `${this.#label} refused a tool call: the Grant reached its limit of ${plural(this.limit, 'tool call', 'tool calls')} per minute.`,
+          '{service} {upstream} for {grant} refused a tool call: the Grant reached its limit of {limit} per minute.',
+          { limit: this.limit },
         );
       }
       this.#episode.refused += 1;
@@ -97,7 +86,8 @@ export class ToolCallLimit {
   endEpisode() {
     if (this.#episode !== undefined) {
       this.#log.info(
-        `${this.#label} ended a tool call limit episode: it refused ${plural(this.#episode.refused, 'tool call', 'tool calls')}.`,
+        '{service} {upstream} for {grant} ended a tool call limit episode: it refused {refused} in the episode.',
+        { refused: this.#episode.refused },
       );
       this.#episode = undefined;
     }

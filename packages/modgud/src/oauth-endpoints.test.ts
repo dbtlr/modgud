@@ -5,11 +5,22 @@ import { join } from 'node:path';
 
 import { sha256Hex } from './bearer.ts';
 import { parseConfig } from './config.ts';
+import type { Log } from './log.ts';
 import { s256Challenge } from './pkce.ts';
 import { createPublicListener } from './public-listener.ts';
 import type { PublicListener } from './public-listener.ts';
 import { openStore } from './store.ts';
 import type { Store } from './store.ts';
+import { createLogRecorder, everything } from './testing/log-recorder.ts';
+import type { LogEntry } from './testing/log-recorder.ts';
+
+// The entries that name an authorization by its prefix, other than an issue.
+const revocations = (recorded: LogEntry[], authorizationId: string) =>
+  recorded.filter(
+    (entry) =>
+      entry.fields.authorization === authorizationId.slice(0, 8) &&
+      !entry.message.startsWith('Issued tokens'),
+  );
 
 // The OAuth endpoints of the Public listener (docs/oauth.md), driven through
 // the listener's fetch handler with a real store and an injected clock.
@@ -46,12 +57,13 @@ let directory = '';
 let clock = START;
 let store: Store;
 let listener: PublicListener;
-let lines: string[] = [];
+let entries: LogEntry[] = [];
+let log: Log = createLogRecorder().log;
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'modgud-oauth-'));
   clock = START;
-  lines = [];
+  ({ entries, log } = createLogRecorder());
   store = await openStore({
     maxTokenLifetimeDays: 30,
     now: () => clock,
@@ -62,7 +74,7 @@ beforeEach(async () => {
   listener = createPublicListener({
     config,
     home: '/home/modgud-test',
-    log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
+    log,
     now: () => clock,
     parentEnvironment: {},
     store,
@@ -270,8 +282,13 @@ describe('dynamic client registration', () => {
     });
     const clientId = String(body.client_id);
     expect(store.findClient(clientId)?.redirectUris).toEqual([REDIRECT]);
-    expect(lines.some((line) => line.includes(clientId.slice(0, 8)))).toBe(true);
-    expect(lines.some((line) => line.includes(clientId))).toBe(false);
+    expect(entries).toEqual([
+      {
+        fields: { client: clientId.slice(0, 8), clientName: 'Claude' },
+        level: 'info',
+        message: 'Registered client {client}.',
+      },
+    ]);
   });
 
   test('leaves out client_name when none was given', async () => {
@@ -411,7 +428,7 @@ describe('dynamic client registration', () => {
     const fullListener = createPublicListener({
       config,
       home: '/home/modgud-test',
-      log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
+      log,
       now: () => clock,
       parentEnvironment: {},
       store: full,
@@ -434,7 +451,7 @@ describe('dynamic client registration', () => {
         redirectUri: REDIRECT,
         requestedRedirectUri: null,
       });
-      lines = [];
+      entries.length = 0;
 
       const refused = await fullListener.fetch(
         new Request(`${PUBLIC}/oauth/register`, {
@@ -446,7 +463,7 @@ describe('dynamic client registration', () => {
 
       expect(refused.status).toBe(503);
       expect(refused.headers.get('cache-control')).toBe('no-store');
-      expect(lines).toEqual([]);
+      expect(entries).toEqual([]);
       expect(full.findClient(clientId)).toBeDefined();
     } finally {
       await fullListener.close();
@@ -464,7 +481,7 @@ describe('dynamic client registration', () => {
     const broken = createPublicListener({
       config,
       home: '/home/modgud-test',
-      log: { info: (line) => lines.push(line), warn: (line) => lines.push(line) },
+      log,
       now: () => clock,
       parentEnvironment: {},
       store: failing,
@@ -482,7 +499,13 @@ describe('dynamic client registration', () => {
       expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
       expect(response.headers.get('cache-control')).toBe('no-store');
       expect(await response.text()).toBe('Internal Server Error');
-      expect(lines).toEqual(['Answered POST /oauth/register with HTTP 500: database is locked']);
+      expect(entries).toEqual([
+        {
+          fields: { error: 'database is locked', method: 'POST', path: '/oauth/register' },
+          level: 'warn',
+          message: 'Answered {method} {path} with HTTP 500: {error}',
+        },
+      ]);
     } finally {
       await broken.close();
     }
@@ -528,10 +551,16 @@ describe('the token endpoint, authorization_code grant', () => {
     await refresh(clientId, refreshed.refresh_token, { resource: RESOURCE });
     await refresh(clientId, 'mdg_rt_unknown');
 
-    expect(lines).toEqual([
-      `Issued tokens to client ${label} for authorization ${prefix} from the authorization code, resource absent.`,
-      `Issued tokens to client ${label} for authorization ${prefix} from the refresh token, resource absent.`,
-      `Issued tokens to client ${label} for authorization ${prefix} from the refresh token, resource sent.`,
+    const issued = (credential: string, resource: string) => ({
+      fields: { authorization: prefix, client: label, credential, resource },
+      level: 'info' as const,
+      message:
+        'Issued tokens to client {client} for authorization {authorization} from the {credential}, resource {resource}.',
+    });
+    expect(entries).toEqual([
+      issued('authorization code', 'absent'),
+      issued('refresh token', 'absent'),
+      issued('refresh token', 'sent'),
     ]);
   });
 
@@ -659,12 +688,11 @@ describe('the token endpoint, authorization_code grant', () => {
     expect(await errorOf(replay)).toBe('invalid_grant');
     expect(store.verifyAccessToken(tokens.access_token)).toBeUndefined();
     expect(store.isAuthorizationActive(authorizationId)).toBe(false);
-    const logged = lines.filter(
-      (line) => line.includes(authorizationId.slice(0, 8)) && !line.startsWith('Issued tokens'),
-    );
+    const logged = revocations(entries, authorizationId);
     expect(logged).toHaveLength(1);
-    expect(logged[0]).toContain('authorization code');
-    expect(lines.some((line) => line.includes(authorizationId) || line.includes(code))).toBe(false);
+    expect(logged[0]?.fields.credential).toBe('authorization code');
+    expect(everything(entries)).not.toContain(authorizationId);
+    expect(everything(entries)).not.toContain(code);
   });
 });
 
@@ -706,13 +734,11 @@ describe('the token endpoint, refresh_token grant', () => {
 
     expect(await errorOf(replay)).toBe('invalid_grant');
     expect(await errorOf(await refresh(clientId, rotated.refresh_token))).toBe('invalid_grant');
-    const logged = lines.filter(
-      (line) => line.includes(authorizationId.slice(0, 8)) && !line.startsWith('Issued tokens'),
-    );
+    const logged = revocations(entries, authorizationId);
     expect(logged).toHaveLength(1);
-    expect(logged[0]).toContain('refresh token');
+    expect(logged[0]?.fields.credential).toBe('refresh token');
     const family = tokens.refresh_token.slice('mdg_rt_'.length, 'mdg_rt_'.length + 43);
-    expect(lines.some((line) => line.includes(family))).toBe(false);
+    expect(everything(entries)).not.toContain(family);
   });
 
   test('refuses a resource that does not match with invalid_target', async () => {

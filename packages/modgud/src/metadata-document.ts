@@ -185,7 +185,8 @@ export const createMetadataDocumentFetcher = ({
     const label = loggable(clientLabel(clientId));
     if (budget.wait('all') > 0) {
       log.warn(
-        `Did not fetch the client metadata document of ${label}: ${String(FETCHES_PER_MINUTE)} fetches in the last minute.`,
+        'Did not fetch the client metadata document of {client}: {limit} fetches in the last minute.',
+        { client: label, limit: FETCHES_PER_MINUTE },
       );
       return undefined;
     }
@@ -196,7 +197,10 @@ export const createMetadataDocumentFetcher = ({
       return metadata;
     } catch (error) {
       const reason = error instanceof FetchFailureError ? error.message : String(error);
-      log.warn(`Could not use the client metadata document of ${label}: ${loggable(reason)}.`);
+      log.warn('Could not use the client metadata document of {client}: {reason}.', {
+        client: label,
+        reason: loggable(reason),
+      });
       return undefined;
     }
   };

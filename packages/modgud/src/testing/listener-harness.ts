@@ -9,13 +9,14 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { sha256Hex } from '../bearer.ts';
 import { parseConfig } from '../config.ts';
 import type { GrantLimits } from '../grant-relay.ts';
-import type { Log } from '../log.ts';
 import { s256Challenge } from '../pkce.ts';
 import { createPublicListener } from '../public-listener.ts';
 import type { PublicListener } from '../public-listener.ts';
 import { CONNECTION_IDLE_SECONDS, listen } from '../serve.ts';
 import { openStore } from '../store.ts';
 import type { Store } from '../store.ts';
+import { createLogRecorder } from './log-recorder.ts';
+import type { LogEntry } from './log-recorder.ts';
 
 export const TOKEN = 'harness-token';
 export const PUBLIC = 'https://modgud.example.com';
@@ -27,7 +28,7 @@ const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 
 export type Running = {
   listener: PublicListener;
-  lines: string[];
+  entries: LogEntry[];
   url: URL;
   stop: () => Promise<void>;
   store: Store;
@@ -159,8 +160,7 @@ export const createHarness = () => {
       [services.other]
       ${stub}
     `);
-    const lines: string[] = [];
-    const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
+    const { entries, log } = createLogRecorder();
     const store = await openTestStore();
     const listener = createPublicListener({
       config,
@@ -185,7 +185,7 @@ export const createHarness = () => {
       },
     );
     const instance: Running = {
-      lines,
+      entries,
       listener,
       stop: async () => {
         await listener.close();
@@ -396,6 +396,10 @@ export const waitFor = async (condition: () => boolean | Promise<boolean>, timeo
   }
 };
 
-// Log lines of the Children that started.
-export const childStarts = (lines: string[]) =>
-  lines.filter((line) => / child for .+ started, pid \d+\.$/u.test(line));
+// Log entries of the Children that started.
+export const childStarts = (entries: LogEntry[]) =>
+  entries.filter(
+    (entry) =>
+      entry.message === '{service} {upstream} for {grant} started, pid {pid}.' &&
+      entry.fields.upstream === 'child',
+  );

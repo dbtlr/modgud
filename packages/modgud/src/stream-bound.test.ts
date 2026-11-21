@@ -38,7 +38,7 @@ const sendWithoutReading = async (url: URL, headers: Record<string, string>, bod
 };
 
 test('a stream its Caller stops reading is ended, and the Grant keeps serving', async () => {
-  const { lines, url } = await harness.start();
+  const { entries, url } = await harness.start();
   const stalled = await openRawSession(url);
   const bystander = await openRawSession(url);
   // Far more than the HTTP connection's buffers take before Modgud holds the rest.
@@ -53,7 +53,7 @@ test('a stream its Caller stops reading is ended, and the Grant keeps serving', 
     JSON.stringify({ jsonrpc: '2.0', ...flood }),
   );
   try {
-    await waitFor(() => lines.some((line) => line.includes('stopped reading')), 20_000);
+    await waitFor(() => entries.some((entry) => entry.message.includes('stopped reading')), 20_000);
     // The Session whose stream ended stays open, and so does every other.
     const own = await requestOn(url, stalled.headers, toolCall(2, 'echo', { text: 'mine' }));
     expect(JSON.stringify(own.messages)).toContain('mine');
