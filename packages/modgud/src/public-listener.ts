@@ -419,6 +419,7 @@ export const createPublicListener = ({
     }
     if (authentication.result === 'valid') {
       log.warn('Refused a {service} request from {caller}: Origin {origin} is not allowed.', {
+        ...authentication.callerFields,
         caller: authentication.caller,
         origin: excerpt(origin, ORIGIN_LOG_LIMIT),
         service: serviceName,

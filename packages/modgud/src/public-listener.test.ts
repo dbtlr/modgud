@@ -41,8 +41,8 @@ import type { StubHttpRequest } from './testing/stub-http-service.ts';
 const STDERR = '{service} {upstream} for {grant} stderr: {line}';
 
 // The event of a request refused for its Origin.
-const originRefused = (caller: string) => ({
-  fields: { caller, origin: 'https://evil.test', service: 'stub' },
+const originRefused = (caller: string, credential?: { authorization: string; client: string }) => ({
+  fields: { ...credential, caller, origin: 'https://evil.test', service: 'stub' },
   level: 'warn' as const,
   message: 'Refused a {service} request from {caller}: Origin {origin} is not allowed.',
 });
@@ -753,7 +753,10 @@ describe('refusals', () => {
     expect(oauth.status).toBe(403);
     expect(entries).toEqual([
       originRefused('the static bearer token'),
-      originRefused(`client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}`),
+      originRefused(`client ${clientId.slice(0, 8)} authorization ${authorizationId.slice(0, 8)}`, {
+        authorization: authorizationId.slice(0, 8),
+        client: clientId.slice(0, 8),
+      }),
     ]);
   });
 
