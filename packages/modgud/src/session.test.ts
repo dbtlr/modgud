@@ -78,7 +78,7 @@ const overflowed = (entries: LogEntry[]) =>
   entries.filter(
     (entry) =>
       entry.message ===
-      '{service} session {session} ended a stream its Caller stopped reading, with more than {limit} MiB unsent.',
+      '{service} session {session} ended a stream its Caller stopped reading, with more than {limitMiB} MiB unsent.',
   );
 
 test('a GET stream holding more than 1 MiB unread ends on the next message, and the Session stays open', async () => {

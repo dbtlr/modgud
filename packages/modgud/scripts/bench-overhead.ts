@@ -129,7 +129,7 @@ const proxied = await (async () => {
     maxTokenLifetimeDays: 30,
     path: join(storeDirectory, 'modgud.sqlite'),
     resource: 'https://modgud.example.com/bench/mcp',
-    warn: (line) => console.error(line),
+    warn: ({ sentence }) => console.error(sentence),
   });
   const listener = createPublicListener({
     config,

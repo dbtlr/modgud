@@ -32,7 +32,7 @@ export const createLogRecorder = () => {
   const entries: LogEntry[] = [];
   const bind = (bound: LogFields): Log => {
     const record = (level: LogEntry['level']) => (message: string, fields?: LogFields) => {
-      entries.push({ fields: copyOfFields({ ...bound, ...fields }), level, message });
+      entries.push({ fields: { ...bound, ...copyOfFields(fields ?? {}) }, level, message });
     };
     return {
       info: record('info'),
