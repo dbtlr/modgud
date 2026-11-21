@@ -4,7 +4,7 @@ import type { Host, LogFields, Out } from '@loomcli/core';
 
 import { defaultConfigPath, readConfig, resolveStorePath, serviceResource } from './config.ts';
 import type { Config } from './config.ts';
-import { describeError, fillTemplate, loggable } from './log.ts';
+import { describeError, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { openStore } from './store.ts';
 
@@ -67,8 +67,15 @@ export const openConfiguredStore = async (
       maxTokenLifetimeDays: config.harness.max_token_lifetime_days,
       path: resolveStorePath(config, host.home),
       resource: serviceResource(config, config.harness.service),
-      warn: (template, fields) =>
-        warnBoth(report, template, fields, loggable(fillTemplate(template, fields))),
+      warn: ({ fields, sentence, template }) =>
+        warnBoth(
+          report,
+          template,
+          Object.fromEntries(
+            Object.entries(fields).map(([name, value]) => [name, loggable(String(value))]),
+          ),
+          loggable(sentence),
+        ),
     });
   } catch (error) {
     return report.out.fatal(loggable(`Could not open the store: ${describeError(error)}`));

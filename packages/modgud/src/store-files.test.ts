@@ -3,10 +3,8 @@ import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { LogFields } from '@loomcli/core';
-
-import { fillTemplate } from './log.ts';
 import { secureStoreFiles } from './store-files.ts';
+import type { StoreWarning } from './store-files.ts';
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -53,7 +51,7 @@ const modeOf = async (path: string) => (await stat(path)).mode & 0o777;
 const collect = () => {
   const warnings: string[] = [];
   return {
-    warn: (template: string, fields: LogFields) => warnings.push(fillTemplate(template, fields)),
+    warn: ({ sentence }: StoreWarning) => warnings.push(sentence),
     warnings,
   };
 };

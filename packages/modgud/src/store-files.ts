@@ -6,8 +6,10 @@ import type { LogFields } from '@loomcli/core';
 
 import { describeError } from './log.ts';
 
-// How the store reports a warning: a constant template and its fields.
-export type StoreWarn = (template: string, fields: LogFields) => void;
+// How the store reports a warning: a constant template and its fields for the
+// log, and the same warning as a sentence for the person at the terminal.
+export type StoreWarning = { fields: LogFields; sentence: string; template: string };
+export type StoreWarn = (warning: StoreWarning) => void;
 
 const PRIVATE_DIRECTORY = 0o700;
 const PRIVATE_FILE = 0o600;
@@ -70,7 +72,12 @@ const narrowFile = async (file: string, warn: StoreWarn) => {
       cause: error,
     });
   }
-  warn('Set {file} from mode {mode} to 0600.', { file, mode: octal(existing.mode) });
+  const mode = octal(existing.mode);
+  warn({
+    fields: { file, mode },
+    sentence: `Set ${file} from mode ${mode} to 0600.`,
+    template: 'Set {file} from mode {mode} to 0600.',
+  });
 };
 
 // Checks the store's directory and files before Modgud or a command reads the

@@ -10,7 +10,6 @@
 // prints its outcome: `opened`, `approved` or `refused`, or `issued` or the
 // token error. `open` waits before opening, so it races the schema migration;
 // the others open first and race the operation.
-import { fillTemplate } from '../log.ts';
 import { s256Challenge } from '../pkce.ts';
 import { openStore } from '../store.ts';
 import type { TokenResult } from '../store.ts';
@@ -31,7 +30,7 @@ const open = async () =>
     maxTokenLifetimeDays: 30,
     path,
     resource: 'https://modgud.example.com/norn/mcp',
-    warn: (template, fields) => console.error(fillTemplate(template, fields)),
+    warn: ({ sentence }) => console.error(sentence),
   });
 
 const outcome = (result: TokenResult) => (result.ok ? 'issued' : result.error);
