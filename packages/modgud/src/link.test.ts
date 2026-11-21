@@ -8,6 +8,7 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/server';
 import packageMetadata from '../package.json';
 import { createLink } from './link.ts';
 import type { LinkOptions } from './link.ts';
+import { createLogRecorder, everything } from './testing/log-recorder.ts';
 import {
   httpEvent,
   httpId,
@@ -19,6 +20,10 @@ import {
 } from './testing/stub-http-service.ts';
 import type { StubHttpRequest } from './testing/stub-http-service.ts';
 import type { Upstream } from './upstream.ts';
+
+// What the Link's Grant binds to every event of its log, and the start of each template.
+const BOUND = { grant: 'static-token', service: 'stub', upstream: 'link' };
+const LINK = '{service} {upstream} for {grant}';
 
 const cleanups: (() => Promise<unknown>)[] = [];
 
@@ -49,8 +54,7 @@ const fixture = async (
   const messages: JSONRPCMessage[] = [];
   const failures: number[] = [];
   const stops: { reason: string; failure: boolean }[] = [];
-  const warnings: string[] = [];
-  const infos: string[] = [];
+  const { entries, log } = createLogRecorder();
   let nextId = 0;
   const options: LinkOptions = {
     events: {
@@ -59,9 +63,8 @@ const fixture = async (
       onStopped: (reason, failure) => stops.push({ failure, reason }),
     },
     home,
-    label: 'stub link for static-token',
     ...(limits === undefined ? {} : { limits }),
-    log: { info: (line) => infos.push(line), warn: (warning) => warnings.push(warning) },
+    log: log.with(BOUND),
     nextId: () => ++nextId,
     service: {
       bearer_file: '~/token',
@@ -83,12 +86,12 @@ const fixture = async (
     bearerPath,
     failures,
     ids: () => nextId,
-    infos,
+    infos: () => entries.filter((entry) => entry.level === 'info'),
     link,
     messages,
     options,
     stops,
-    warnings,
+    warnings: () => entries.filter((entry) => entry.level === 'warn'),
   };
 };
 
@@ -195,10 +198,14 @@ test('logs the bearer failure category without the file contents', async () => {
   await writeFile(bearerPath, 'secret with spaces');
   expect(await link.start()).toMatchObject({ kind: 'failed' });
   expect(requests).toEqual([]);
-  expect(warnings).toEqual([
-    expect.stringMatching(/^stub link for static-token .*token.*invalid secret/u),
+  expect(warnings()).toEqual([
+    {
+      fields: { ...BOUND, error: expect.stringMatching(/invalid secret/u), file: bearerPath },
+      level: 'warn',
+      message: `${LINK} bearer file {file}: {error}`,
+    },
   ]);
-  expect(warnings.join('')).not.toContain('secret with spaces');
+  expect(everything(warnings())).not.toContain('secret with spaces');
 });
 
 test('applies one deadline to the whole start handshake', async () => {
@@ -385,8 +392,7 @@ test('bypasses proxy environment variables on every Link request', async () => {
     const link = createLink({
       service: ${JSON.stringify(options.service)},
       home: ${JSON.stringify(options.home)},
-      label: 'stub link for static-token',
-      log: { warn() {}, info() {} },
+      log: { warn() {}, info() {}, with() { return this; } },
       events: { onMessage() {}, onRequestFailed() {}, onStopped() {} },
       nextId: () => 1,
       limits: { auxiliaryTimeoutMs: 200 },
@@ -517,8 +523,12 @@ test('logs and drops a bad answer to a Service response POST', async () => {
   expect(await link.start()).toMatchObject({ kind: 'started' });
   const reply = rpcResult('service-ping');
   link.answer(reply);
-  await eventually(() => warnings.length === 1);
-  expect(warnings[0]).toContain('bad answer');
+  await eventually(() => warnings().length === 1);
+  expect(warnings()[0]).toEqual({
+    fields: { ...BOUND, kind: 'answer' },
+    level: 'warn',
+    message: `${LINK} bad {kind} answer, dropping {kind}`,
+  });
   expect(requests[2]?.message).toEqual(reply);
   expect(stops).toEqual([]);
 });
@@ -684,7 +694,7 @@ test.each([401, 404])(
     expect(requests.map(httpMethod)).toContain('notifications/cancelled');
     expect(requests.filter(({ method }) => method === 'DELETE')).toHaveLength(1);
     expect(stops).toEqual([]);
-    expect(warnings).toEqual([]);
+    expect(warnings()).toEqual([]);
   },
 );
 
@@ -800,9 +810,9 @@ test('bounds cancellations, answers and DELETE independently', async () => {
     requests.filter((request) => request.method === 'POST' && httpMethod(request) === undefined),
   ).toHaveLength(1);
   expect(requests.filter(({ method }) => method === 'DELETE')).toHaveLength(1);
-  expect(warnings).toEqual([
-    expect.stringContaining('dropping cancellation'),
-    expect.stringContaining('dropping answer'),
+  expect(warnings().map((entry) => [entry.message, entry.fields.kind])).toEqual([
+    [`${LINK} too many {kind} requests in flight, dropping {kind}`, 'cancellation'],
+    [`${LINK} too many {kind} requests in flight, dropping {kind}`, 'answer'],
   ]);
   expect(stops).toEqual([]);
 });
@@ -812,20 +822,38 @@ test('logs a start and a stop with its reason, never the bearer', async () => {
   expect(await link.start()).toMatchObject({ kind: 'started' });
   link.stop('idle');
   await link.stopped;
-  expect(infos).toEqual([
-    'stub link for static-token started.',
-    'stub link for static-token stopped: idle.',
+  expect(infos()).toEqual([
+    { fields: BOUND, level: 'info', message: `${LINK} started.` },
+    { fields: { ...BOUND, reason: 'idle' }, level: 'info', message: `${LINK} stopped: {reason}.` },
   ]);
-  expect(infos.join('')).not.toContain('startup-token');
+  expect(everything(infos())).not.toContain('startup-token');
 });
 
 test('logs a failed start as a stop with its reason', async () => {
   const { link, bearerPath, infos } = await fixture();
   await writeFile(bearerPath, 'secret with spaces');
   await link.start();
-  expect(infos).toHaveLength(1);
-  expect(infos[0]).toMatch(/^stub link for static-token stopped: bearer file .*token: .+\.$/u);
-  expect(infos[0]).not.toContain('secret with spaces');
+  expect(infos()).toHaveLength(1);
+  expect(infos()[0]?.message).toBe(`${LINK} stopped: {reason}.`);
+  expect(infos()[0]?.fields.reason).toMatch(/^bearer file .*token: .+$/u);
+  expect(everything(infos())).not.toContain('secret with spaces');
+});
+
+test('a failed start logs only strings and numbers, never an Error', async () => {
+  const { link, infos, warnings } = await fixture({
+    respond: (request) =>
+      httpMethod(request) === 'initialize'
+        ? new Response('echo of startup-token', { status: 500 })
+        : undefined,
+  });
+  expect(await link.start()).toMatchObject({ kind: 'failed' });
+  const logged = [...infos(), ...warnings()];
+  expect(logged.length).toBeGreaterThan(0);
+  for (const { fields } of logged) {
+    for (const value of Object.values(fields)) {
+      expect(['string', 'number']).toContain(typeof value);
+    }
+  }
 });
 
 test('logs a self-stop after a 401 without the Service text', async () => {
@@ -839,8 +867,12 @@ test('logs a self-stop after a 401 without the Service text', async () => {
   expect(await link.start()).toMatchObject({ kind: 'started' });
   link.answer(rpcResult('service-ping'));
   await eventually(() => stops.length === 1);
-  expect(infos).toEqual([
-    'stub link for static-token started.',
-    'stub link for static-token stopped: Service refused the bearer.',
+  expect(infos()).toEqual([
+    { fields: BOUND, level: 'info', message: `${LINK} started.` },
+    {
+      fields: { ...BOUND, reason: 'Service refused the bearer' },
+      level: 'info',
+      message: `${LINK} stopped: {reason}.`,
+    },
   ]);
 });

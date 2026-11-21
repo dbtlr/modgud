@@ -12,6 +12,10 @@ import type { FetchMetadataDocument } from './metadata-document.ts';
 import { s256Challenge } from './pkce.ts';
 import { openStore } from './store.ts';
 import type { Store } from './store.ts';
+import { createLogRecorder, entriesOf, everything } from './testing/log-recorder.ts';
+import type { LogEntry } from './testing/log-recorder.ts';
+
+const WRONG_CODE = 'A wrong Pairing code was entered for client {client} ({failures} of {limit}).';
 
 const PUBLIC = 'https://modgud.example.com';
 const ADMIN = 'https://modgud.example.ts.net';
@@ -50,7 +54,8 @@ const config = parseConfig(`
 let directory = '';
 let store: Store;
 let listener: AdminListener;
-let lines: string[] = [];
+let entries: LogEntry[] = [];
+let log: Log = createLogRecorder().log;
 let clock = 0;
 let metadataFetches: string[] = [];
 let documents = new Map<string, ClientMetadata>();
@@ -70,13 +75,14 @@ const start = async () => {
     resource: RESOURCE,
     warn: () => undefined,
   });
-  const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
+  const recorder = createLogRecorder();
+  entries = recorder.entries;
+  log = recorder.log;
   listener = createAdminListener({ config, fetchMetadataDocument, log, now: () => clock, store });
 };
 
 beforeEach(async () => {
   clock = Date.now();
-  lines = [];
   metadataFetches = [];
   documents = new Map();
   await start();
@@ -539,7 +545,7 @@ describe('pending requests', () => {
 
     expect(expired.status).toBe(400);
     expect(await expired.text()).toContain('expired or already ended');
-    expect(lines.join('\n')).not.toContain('wrong Pairing code');
+    expect(entriesOf(entries, WRONG_CODE)).toEqual([]);
   });
 
   test('last until just before 10 minutes', async () => {
@@ -629,7 +635,7 @@ describe('POST /authorize', () => {
       `${REDIRECT}?error=access_denied&iss=${encodeURIComponent(PUBLIC)}&state=state-123`,
     );
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(lines.some((line) => line.includes('Denied client'))).toBe(true);
+    expect(entriesOf(entries, 'Denied client {client}.')).toHaveLength(1);
     expect((await approveWith(approval, store.mintPairingCode(10).code)).status).toBe(400);
   });
 
@@ -715,7 +721,7 @@ describe('POST /authorize', () => {
     const approval = await openApproval(authorizeQuery(clientId));
     expect((await approveWith(approval, spent)).status).toBe(400);
     expect((await approveWith(approval, expiring)).status).toBe(400);
-    expect(lines.filter((line) => line.includes('wrong Pairing code'))).toHaveLength(2);
+    expect(entriesOf(entries, WRONG_CODE)).toHaveLength(2);
   });
 
   test('refuses every code after 20 failures in 10 minutes, neither checking nor counting them', async () => {
@@ -740,7 +746,14 @@ describe('POST /authorize', () => {
       // oxlint-disable-next-line no-await-in-loop -- one attempt after another
       expect(await refused.text()).toContain('Too many wrong Pairing codes');
     }
-    expect(lines.some((line) => line.includes('20 wrong codes in the last 10 minutes'))).toBe(true);
+    expect(
+      entries.some(
+        (entry) =>
+          entry.message ===
+            'Refused a Pairing code for client {client}: {limit} wrong codes in the last 10 minutes.' &&
+          entry.fields.limit === 20,
+      ),
+    ).toBe(true);
 
     // The first failure leaves the window; the same code then approves.
     clock += 10 * MINUTE - 20 * 1000 + 1;
@@ -782,7 +795,6 @@ describe('an unexpected error', () => {
         throw new Error('disk I/O error');
       },
     };
-    const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
     const broken = createAdminListener({ config, fetchMetadataDocument, log, store: failing });
 
     const response = await broken.fetch(
@@ -793,7 +805,13 @@ describe('an unexpected error', () => {
     expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(await response.text()).toBe('Internal Server Error');
-    expect(lines).toEqual(['Answered GET /authorize with HTTP 500: disk I/O error']);
+    expect(entries).toEqual([
+      {
+        fields: { error: 'disk I/O error', method: 'GET', path: '/authorize' },
+        level: 'warn',
+        message: 'Answered {method} {path} with HTTP 500: {error}',
+      },
+    ]);
     broken.close();
   });
 });
@@ -809,21 +827,30 @@ describe('logging', () => {
     const denied = await openApproval(authorizeQuery(clientId));
     await post({ action: 'deny', request: denied.id }, { cookie: denied.cookie });
 
-    const log = lines.join('\n');
-    expect(log).toContain(`wrong Pairing code was entered for client ${clientId.slice(0, 8)}`);
-    expect(log).toMatch(
-      new RegExp(
-        `Approved client ${clientId.slice(0, 8)} \\(Claude\\) as authorization [\\w-]{8}\\.`,
-        'u',
-      ),
+    const short = clientId.slice(0, 8);
+    expect(entriesOf(entries, WRONG_CODE).map((entry) => entry.fields)).toEqual([
+      { client: short, failures: 1, limit: 5 },
+    ]);
+    const approved = entriesOf(
+      entries,
+      'Approved client {client} as authorization {authorization}.',
     );
-    expect(log).toContain(`Denied client ${clientId.slice(0, 8)}.`);
-    expect(log).not.toContain(clientId);
-    expect(log).not.toContain(pairingCode);
-    expect(log).not.toContain(pairingCode.replace('-', ''));
-    expect(log).not.toContain(code);
-    expect(log).not.toContain(failed.cookie.split('=')[1] ?? '');
-    expect(log).not.toContain(failed.id);
+    expect(approved).toHaveLength(1);
+    expect(approved[0]?.fields).toEqual({
+      authorization: expect.stringMatching(/^[\w-]{8}$/u),
+      client: short,
+      clientName: 'Claude',
+    });
+    expect(entriesOf(entries, 'Denied client {client}.').map((entry) => entry.fields)).toEqual([
+      { client: short },
+    ]);
+    const logged = everything(entries);
+    expect(logged).not.toContain(clientId);
+    expect(logged).not.toContain(pairingCode);
+    expect(logged).not.toContain(pairingCode.replace('-', ''));
+    expect(logged).not.toContain(code);
+    expect(logged).not.toContain(failed.cookie.split('=')[1] ?? '');
+    expect(logged).not.toContain(failed.id);
   });
 });
 
@@ -846,7 +873,11 @@ describe('a client with a metadata document', () => {
     expect(approval.html).not.toContain('class="warning"');
     const response = await approveWith(approval, store.mintPairingCode(10).code);
     expect(response.status).toBe(303);
-    expect(lines.some((line) => line.includes('Approved client chatgpt.com (ChatGPT)'))).toBe(true);
+    expect(
+      entriesOf(entries, 'Approved client {client} as authorization {authorization}.').map(
+        (entry) => ({ client: entry.fields.client, clientName: entry.fields.clientName }),
+      ),
+    ).toEqual([{ client: 'chatgpt.com', clientName: 'ChatGPT' }]);
   });
 
   test('warns when the redirect host differs from the client_id host', async () => {

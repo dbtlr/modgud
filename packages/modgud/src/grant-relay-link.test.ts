@@ -13,6 +13,7 @@ import type { GrantLimits, GrantSession } from './grant-relay.ts';
 import { createLink } from './link.ts';
 import type { LinkOptions } from './link.ts';
 import { ERRORS } from './protocol.ts';
+import { createLogRecorder } from './testing/log-recorder.ts';
 import { httpMethod, httpStream, startStubHttpService } from './testing/stub-http-service.ts';
 import type { StubHttpRequest } from './testing/stub-http-service.ts';
 
@@ -80,13 +81,13 @@ const fixture = async ({
   if (!missingBearer) {
     await writeFile(join(home, 'token'), 'startup-token');
   }
-  const warnings: string[] = [];
-  const log = { info: () => undefined, warn: (line: string) => warnings.push(line) };
+  const { entries, log: recorded } = createLogRecorder();
+  // The log of the relay's Grant, as the Public listener binds it.
+  const log = recorded.with({ grant: 'static-token', service: 'stub', upstream: 'link' });
   const grantLimits: GrantLimits = { ...GRANT_LIMITS, ...limits };
   const relay = new GrantRelay({
     grant: 'static-token',
     idleTimeoutMs,
-    label: 'stub link for static-token',
     limits: grantLimits,
     log,
     maxToolCallsPerMinute: 120,
@@ -95,7 +96,6 @@ const fixture = async ({
       createLink({
         events,
         home,
-        label: 'stub link for static-token',
         ...(linkLimits === undefined ? {} : { limits: linkLimits }),
         log,
         nextId,
@@ -128,7 +128,7 @@ const fixture = async ({
     const answer = answerTo(id);
     return answer !== undefined && 'error' in answer ? answer.error.message : undefined;
   };
-  return { answerTo, delivered, errorTo, initializes, relay, session, stub, warnings };
+  return { answerTo, delivered, entries, errorTo, initializes, relay, session, stub };
 };
 
 test('a stopped Link keeps its hung request counting until the hold passes', async () => {
@@ -165,11 +165,24 @@ test('a stopped Link keeps its hung request counting until the hold passes', asy
 });
 
 test('one initialize with a missing bearer file starts one Link and records one failure', async () => {
-  const { initializes, relay, warnings } = await fixture({ missingBearer: true });
+  const { entries, initializes, relay } = await fixture({ missingBearer: true });
   expect(await relay.ready()).toEqual({ kind: 'failed' });
   // Let a second Link, were one started, reach its own bearer read.
   await Bun.sleep(50);
-  expect(warnings.filter((line) => line.includes('bearer file'))).toHaveLength(1);
+  // The Link's event carries the fields its Grant's log was bound with.
+  expect(entries.filter((entry) => entry.message.includes('bearer file'))).toEqual([
+    {
+      fields: {
+        error: expect.any(String),
+        file: expect.stringMatching(/\/token$/u),
+        grant: 'static-token',
+        service: 'stub',
+        upstream: 'link',
+      },
+      level: 'warn',
+      message: '{service} {upstream} for {grant} bearer file {file}: {error}',
+    },
+  ]);
   expect(initializes()).toBe(0);
 });
 
@@ -246,13 +259,13 @@ test('ending a relay for shutdown leaves no timers that keep the process alive',
         return new Response(null, { status: message === undefined ? 204 : 202 });
       },
     });
-    const log = { info() {}, warn() {} };
+    const log = { info() {}, warn() {}, with() { return log; } };
     const home = ${JSON.stringify(await temporaryHome('modgud-linger-'))};
     await Bun.write(home + '/token', 'secret');
     const relay = new GrantRelay({
-      grant: 'g', idleTimeoutMs: 60_000, label: 'l', service: 's', log,
+      grant: 'g', idleTimeoutMs: 60_000, service: 's', log,
       limits: { ...GRANT_LIMITS, cancelledHoldMs: 30_000 },
-      upstream: (events, nextId) => createLink({ events, home, label: 'l', log, nextId, startTimeoutMs: 5000,
+      upstream: (events, nextId) => createLink({ events, home, log, nextId, startTimeoutMs: 5000,
         service: { kind: 'http', url: new URL('/mcp', stub.url).href, bearer_file: '~/token', idle_timeout_minutes: 1, tool_list_max_age_seconds: 60 } }),
     });
     const session = { activity: 0, deliver() {}, end() {}, ended: false, given: undefined };

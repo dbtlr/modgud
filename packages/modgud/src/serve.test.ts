@@ -13,6 +13,7 @@ import { listen } from './serve.ts';
 import { openStore } from './store.ts';
 import { appEnvironment, logPath } from './testing/app-environment.ts';
 import { waitFor } from './testing/listener-harness.ts';
+import { createLogRecorder } from './testing/log-recorder.ts';
 
 const directory = await mkdtemp(join(tmpdir(), 'modgud-serve-'));
 afterAll(async () => {
@@ -76,8 +77,8 @@ const writeServeConfig = async (name: string, publicSettings = '') => {
   return { configPath, storePath };
 };
 
-// The records Loom's logging plugin writes to `path`, as `<level> <message>`,
-// read as they arrive until `exited` says the process that writes them ended.
+// The records Loom's logging plugin writes to `path`, as `<level> <message>
+// <fields as JSON>`, read as they arrive until `exited` says the process that writes them ended.
 async function* logRecordsOf(path: string, exited: () => boolean) {
   let seen = 0;
   for (;;) {
@@ -89,8 +90,12 @@ async function* logRecordsOf(path: string, exited: () => boolean) {
       .split('\n')
       .slice(0, -1);
     for (const line of complete.slice(seen)) {
-      const record = JSON.parse(line) as { level: string; message: string };
-      yield `${record.level} ${record.message}`;
+      const record = JSON.parse(line) as {
+        fields?: Record<string, unknown>;
+        level: string;
+        message: string;
+      };
+      yield `${record.level} ${record.message} ${JSON.stringify(record.fields ?? {})}`;
     }
     seen = complete.length;
     if (wasFinished) {
@@ -149,12 +154,15 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
   expect(result.content).toEqual([{ text: 'served', type: 'text' }]);
   await readUntil(
     lines,
-    /^info stub session \w{8} opened for the static bearer token, Origin none, protocol \S+\.$/u,
+    /^info \{service\} session \{session\} opened for \{caller\}, Origin \{origin\}, protocol \{protocol\}\. \{.*"caller":"the static bearer token"/u,
   );
 
   child.kill('SIGTERM');
-  await readUntil(lines, /^info stub session \w{8} ended: shutdown\.$/u);
-  await readUntil(lines, /^info Stopped\.$/u);
+  await readUntil(
+    lines,
+    /^info \{service\} session \{session\} ended: \{reason\}\. \{.*"reason":"shutdown"/u,
+  );
+  await readUntil(lines, /^info Stopped\. \{\}$/u);
   await readUntil(printed, /^Stopped\.$/u);
   // Loom exits 143 after SIGTERM, once the action has finished its cleanup.
   expect(await child.exited).toBe(143);
@@ -164,9 +172,12 @@ test('serve starts with the retired public.max_sessions set, and warns that it i
   const { configPath } = await writeServeConfig('retired', 'max_sessions = 16');
   const { child, lines } = await startServe(configPath);
   try {
-    await readUntil(lines, /^warn In \S+: public\.max_sessions is ignored: /u);
+    await readUntil(
+      lines,
+      /^warn In \{file\}: \{warning\} \{.*"warning":"public\.max_sessions is ignored: /u,
+    );
     child.kill('SIGTERM');
-    await readUntil(lines, /^info Stopped\.$/u);
+    await readUntil(lines, /^info Stopped\. \{\}$/u);
     expect(await new Response(child.stderr).text()).toContain(
       `In ${configPath}: public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is 64.`,
     );
@@ -246,7 +257,7 @@ test('serve opens the configured store and serves the OAuth endpoints and access
   } finally {
     child.kill('SIGTERM');
   }
-  await readUntil(lines, /^info Stopped\.$/u);
+  await readUntil(lines, /^info Stopped\. \{\}$/u);
   expect(await child.exited).toBe(143);
 });
 
@@ -271,7 +282,7 @@ test('serve answers the Approval page on the Admin listener, only for its config
   } finally {
     child.kill('SIGTERM');
   }
-  await readUntil(lines, /^info Stopped\.$/u);
+  await readUntil(lines, /^info Stopped\. \{\}$/u);
   expect(await child.exited).toBe(143);
 });
 
@@ -314,15 +325,21 @@ test('serve logs the Approval page’s decisions and the errors either listener 
       redirect: 'manual',
     });
     expect(denied.status).toBe(303);
-    await readUntil(lines, /^info Denied client /u);
+    await readUntil(lines, /^info Denied client \{client\}\. \{"client":"[^"]+"\}$/u);
 
     const publicThrown = await fetch(new URL('modgud-test-throw', base));
     const adminThrown = await fetch(new URL('modgud-test-throw', admin), {
       headers: { Host: 'modgud.example.ts.net' },
     });
     expect([publicThrown.status, adminThrown.status]).toEqual([500, 500]);
-    await readUntil(lines, /^warn Answered a request with HTTP 500: thrown past the listener$/u);
-    await readUntil(lines, /^warn Answered a request with HTTP 500: thrown past the listener$/u);
+    await readUntil(
+      lines,
+      /^warn Answered a request with HTTP 500: \{error\} \{"error":"thrown past the listener"\}$/u,
+    );
+    await readUntil(
+      lines,
+      /^warn Answered a request with HTTP 500: \{error\} \{"error":"thrown past the listener"\}$/u,
+    );
   } finally {
     child.kill('SIGTERM');
   }
@@ -346,11 +363,7 @@ test('serve refuses to start when the Admin listener cannot listen, naming its a
 });
 
 test('a listener answers an error that escapes its handler with a plain HTTP 500, not Bun’s error page', async () => {
-  const lines: string[] = [];
-  const log = {
-    info: (line: string) => lines.push(line),
-    warn: (line: string) => lines.push(line),
-  };
+  const { entries, log } = createLogRecorder();
   const server = listen(
     {
       fetch: () => Promise.reject(new Error('store exploded at /secret/path')),
@@ -368,7 +381,13 @@ test('a listener answers an error that escapes its handler with a plain HTTP 500
     expect(response.status).toBe(500);
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(await response.text()).toBe('Internal Server Error');
-    expect(lines).toEqual(['Answered a request with HTTP 500: store exploded at /secret/path']);
+    expect(entries).toEqual([
+      {
+        fields: { error: 'store exploded at /secret/path' },
+        level: 'warn',
+        message: 'Answered a request with HTTP 500: {error}',
+      },
+    ]);
   } finally {
     await server.stop(true);
   }
@@ -380,7 +399,7 @@ const fail = (message: string): never => {
 };
 
 test('a listener refuses a host and port another listener already holds', async () => {
-  const log = { info: () => undefined, warn: () => undefined };
+  const { log } = createLogRecorder();
   const options = {
     fetch: () => Promise.resolve(new Response('ok')),
     host: '127.0.0.1',
@@ -450,7 +469,7 @@ const rawGet = (port: number, path: string, { stall }: { stall: boolean }) => {
 test(
   'a listener ends a connection whose Caller stops reading, while keepalives still arrive, and keeps one that reads',
   async () => {
-    const log = { info: () => undefined, warn: () => undefined };
+    const { log } = createLogRecorder();
     const cancelled = { reading: 0, stalled: 0 };
     const started = performance.now();
     const server = listen(

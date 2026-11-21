@@ -32,8 +32,7 @@ export type LinkOptions = {
   events: UpstreamEvents;
   // What a leading `~/` in the Service's `bearer_file` expands to.
   home: string;
-  // The Link's log label, such as "norn link for <grant>".
-  label: string;
+  // The log of the Link's Grant, bound to its Service, `link`, and Grant.
   log: Log;
   limits?: Partial<typeof LINK_LIMITS>;
   nextId: () => number;
@@ -180,10 +179,6 @@ class Link implements Upstream {
     return job;
   }
 
-  #warn(reason: string) {
-    this.#options.log.warn(`${this.#options.label} ${reason}`);
-  }
-
   // Reads the bearer and runs the start requests. A failure ends the Link.
   async #handshake(): Promise<StartResult> {
     const { service, home } = this.#options;
@@ -192,8 +187,12 @@ class Link implements Upstream {
       const bearer = await readServiceBearer(service, home);
       signal.throwIfAborted();
       if (bearer.kind === 'failed') {
-        const reason = `bearer file ${expandHome(service.bearer_file, home)}: ${bearer.failure}`;
-        this.#warn(reason);
+        const path = expandHome(service.bearer_file, home);
+        const reason = `bearer file ${path}: ${bearer.failure}`;
+        this.#options.log.warn('{service} {upstream} for {grant} bearer file {file}: {error}', {
+          error: bearer.failure,
+          file: path,
+        });
         this.#finish({ kind: 'failed', reason });
         return { kind: 'failed', reason };
       }
@@ -201,7 +200,7 @@ class Link implements Upstream {
       const result = await this.#track(this.#initialize(signal));
       signal.throwIfAborted();
       this.#state = 'running';
-      this.#options.log.info(`${this.#options.label} started.`);
+      this.#options.log.info('{service} {upstream} for {grant} started.');
       return { kind: 'started', result };
     } catch (error) {
       // Request libraries and the Service can put reflected credentials in errors.
@@ -360,7 +359,12 @@ class Link implements Upstream {
         }
       }
       if (inFlight >= limit) {
-        this.#warn(`too many ${kind}s in flight, dropping ${kind}`);
+        this.#options.log.warn(
+          '{service} {upstream} for {grant} too many {kind} requests in flight, dropping {kind}',
+          {
+            kind,
+          },
+        );
         return;
       }
     }
@@ -391,7 +395,10 @@ class Link implements Upstream {
         if (fault !== undefined) {
           this.#selfStop(fault);
         } else {
-          this.#warn(`bad ${kind} answer, dropping ${kind}`);
+          this.#options.log.warn(
+            '{service} {upstream} for {grant} bad {kind} answer, dropping {kind}',
+            { kind },
+          );
         }
       }
     } finally {
@@ -413,7 +420,9 @@ class Link implements Upstream {
       return;
     }
     this.#state = 'stopped';
-    this.#options.log.info(`${this.#options.label} stopped: ${end.reason}.`);
+    this.#options.log.info('{service} {upstream} for {grant} stopped: {reason}.', {
+      reason: end.reason,
+    });
     this.#interrupted.resolve({ kind: 'failed', reason: end.reason });
     this.#startController.abort();
     if (end.kind === 'local') {

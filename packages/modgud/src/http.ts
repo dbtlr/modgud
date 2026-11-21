@@ -42,8 +42,10 @@ export const internalServerError = () =>
 // Logs an unexpected error by the request's method and path and the error's
 // message, never its query, headers, body, or stack, and answers HTTP 500.
 export const answerUnexpectedError = (log: Log, request: Request, error: unknown) => {
-  log.warn(
-    `Answered ${request.method} ${loggable(new URL(request.url).pathname)} with HTTP 500: ${loggable(describeError(error))}`,
-  );
+  log.warn('Answered {method} {path} with HTTP 500: {error}', {
+    error: loggable(describeError(error)),
+    method: request.method,
+    path: loggable(new URL(request.url).pathname),
+  });
   return internalServerError();
 };

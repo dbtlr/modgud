@@ -1,6 +1,7 @@
 import { once } from 'node:events';
 
 import { Command } from '@loomcli/core';
+import type { LogFields } from '@loomcli/core';
 
 import { createAdminListener } from './admin-listener.ts';
 import { configOption, loadConfig, openConfiguredStore } from './command-config.ts';
@@ -45,7 +46,9 @@ export const listen = (
     return Bun.serve({
       development: false,
       error: (error) => {
-        log.warn(`Answered a request with HTTP 500: ${loggable(describeError(error))}`);
+        log.warn('Answered a request with HTTP 500: {error}', {
+          error: loggable(describeError(error)),
+        });
         return internalServerError();
       },
       fetch,
@@ -73,9 +76,11 @@ export const serve = new Command('serve', {
 })
   .option('config', configOption)
   .action(async ({ host, log, options, out, signal }) => {
-    const announce = async (message: string) => {
-      log.info(message);
-      await out.print(message);
+    // Tells the log a constant template with its fields, and the person who
+    // started the command the same sentence filled in.
+    const announce = async (template: string, fields: LogFields, sentence: string) => {
+      log.info(template, fields);
+      await out.print(sentence);
     };
     const config = await loadConfig(host, options.config, { log, out });
     const store = await openConfiguredStore(config, host, { log, out });
@@ -119,9 +124,16 @@ export const serve = new Command('serve', {
     );
     try {
       const services = Object.keys(config.services).map((name) => `/${name}/mcp`);
-      await announce(`Listening on ${publicServer.url.href} for ${services.join(', ')}.`);
       await announce(
-        `Listening on ${adminServer.url.href} for the Approval page at ${config.admin.base_url}/authorize.`,
+        'Listening on {url} for {paths}.',
+        { paths: services, url: publicServer.url.href },
+        `Listening on ${publicServer.url.href} for ${services.join(', ')}.`,
+      );
+      const approvalUrl = `${config.admin.base_url}/authorize`;
+      await announce(
+        'Listening on {url} for the Approval page at {approvalUrl}.',
+        { approvalUrl, url: adminServer.url.href },
+        `Listening on ${adminServer.url.href} for the Approval page at ${approvalUrl}.`,
       );
       if (!signal.aborted) {
         await once(signal, 'abort');
@@ -131,6 +143,6 @@ export const serve = new Command('serve', {
       adminListener.close();
       await Promise.all([publicServer.stop(true), adminServer.stop(true)]);
       store.close();
-      await announce('Stopped.');
+      await announce('Stopped.', {}, 'Stopped.');
     }
   });

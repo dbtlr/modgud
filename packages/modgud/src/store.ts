@@ -7,6 +7,7 @@ import { mintPairingCode, normalizePairingCode } from './pairing-code.ts';
 import { s256Challenge } from './pkce.ts';
 import { randomIdentifier } from './secrets.ts';
 import { secureStoreFiles } from './store-files.ts';
+import type { StoreWarn } from './store-files.ts';
 
 // The OAuth server's store (docs/oauth.md, "Store" and "Tokens and
 // authorizations"): registrations, unspent Pairing codes, authorizations,
@@ -75,7 +76,7 @@ const SCHEMA = `
 export type StoreOptions = {
   path: string;
   // Receives a warning when a store file's mode was wider than 0600.
-  warn: (message: string) => void;
+  warn: StoreWarn;
   // `harness.max_token_lifetime_days`, applied to every authorization when it
   // is checked, not when it was approved.
   maxTokenLifetimeDays: number;

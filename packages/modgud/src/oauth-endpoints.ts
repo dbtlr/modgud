@@ -105,11 +105,10 @@ export const createOAuthEndpoints = ({
     }
     perSource.record(source);
     overall.record('all');
-    log.info(
-      `Registered client ${client.clientId.slice(0, 8)}${
-        client.clientName === undefined ? '' : ` (${loggable(client.clientName)})`
-      }.`,
-    );
+    log.info('Registered client {client}.', {
+      client: client.clientId.slice(0, 8),
+      clientName: client.clientName === undefined ? undefined : loggable(client.clientName),
+    });
     return Response.json(
       {
         client_id: client.clientId,
@@ -141,10 +140,13 @@ export const createOAuthEndpoints = ({
   ) => {
     if (result.ok) {
       log.info(
-        `Issued tokens to client ${loggable(clientLabel(clientId))} for authorization ${result.tokens.authorizationId.slice(
-          0,
-          8,
-        )} from the ${presented}, resource ${resource === undefined ? 'absent' : 'sent'}.`,
+        'Issued tokens to client {client} for authorization {authorization} from the {credential}, resource {resource}.',
+        {
+          authorization: result.tokens.authorizationId.slice(0, 8),
+          client: loggable(clientLabel(clientId)),
+          credential: presented,
+          resource: resource === undefined ? 'absent' : 'sent',
+        },
       );
       return Response.json({
         access_token: result.tokens.accessToken,
@@ -155,9 +157,12 @@ export const createOAuthEndpoints = ({
     }
     if ('revokedAuthorizationId' in result) {
       log.warn(
-        `Revoked authorization ${result.revokedAuthorizationId.slice(0, 8)} of client ${loggable(
-          clientLabel(clientId),
-        )}: a used ${presented} was presented again.`,
+        'Revoked authorization {authorization} of client {client}: a used {credential} was presented again.',
+        {
+          authorization: result.revokedAuthorizationId.slice(0, 8),
+          client: loggable(clientLabel(clientId)),
+          credential: presented,
+        },
       );
     }
     return oauthError(result.error);

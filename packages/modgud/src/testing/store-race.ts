@@ -30,7 +30,7 @@ const open = async () =>
     maxTokenLifetimeDays: 30,
     path,
     resource: 'https://modgud.example.com/norn/mcp',
-    warn: (message) => console.error(message),
+    warn: ({ sentence }) => console.error(sentence),
   });
 
 const outcome = (result: TokenResult) => (result.ok ? 'issued' : result.error);

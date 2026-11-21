@@ -78,7 +78,8 @@ export class Session implements GrantSession {
     this.service = options.service;
     this.#child = options.child;
     this.#idleMs = options.idleMs;
-    this.#log = options.log;
+    // Every event of the Session carries its Service and the id's prefix.
+    this.#log = options.log.with({ service: this.service, session: this.id.slice(0, 8) });
     this.#onEnd = options.onEnd;
     this.#http = new WebStandardStreamableHTTPServerTransport({
       onsessionclosed: () => this.end('deleted'),
@@ -90,12 +91,10 @@ export class Session implements GrantSession {
     this.#http.onmessage = (message) => this.#fromCaller(message);
     // oxlint-disable-next-line unicorn/prefer-add-event-listener
     this.#http.onerror = (error) => {
-      this.#log.warn(`${this.#label} HTTP transport error: ${loggable(error.message)}`);
+      this.#log.warn('{service} session {session} HTTP transport error: {error}', {
+        error: loggable(error.message),
+      });
     };
-  }
-
-  get #label() {
-    return `${this.service} session ${this.id.slice(0, 8)}`;
   }
 
   get ended() {
@@ -152,7 +151,8 @@ export class Session implements GrantSession {
       limitBytes: STREAM_LIMIT_BYTES,
       onOverflow: () => {
         this.#log.warn(
-          `${this.#label} ended a stream its Caller stopped reading, with more than ${String(STREAM_LIMIT_BYTES / 1024 / 1024)} MiB unsent.`,
+          '{service} session {session} ended a stream its Caller stopped reading, with more than {limitMiB} MiB unsent.',
+          { limitMiB: STREAM_LIMIT_BYTES / 1024 / 1024 },
         );
       },
     });
@@ -218,7 +218,9 @@ export class Session implements GrantSession {
     try {
       await this.#http.send(message, relatedRequestId === undefined ? {} : { relatedRequestId });
     } catch (error) {
-      this.#log.warn(`${this.#label} dropped a message: ${loggable(String(error))}`);
+      this.#log.warn('{service} session {session} dropped a message: {error}', {
+        error: loggable(String(error)),
+      });
     }
   }
 

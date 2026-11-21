@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { secureStoreFiles } from './store-files.ts';
+import type { StoreWarning } from './store-files.ts';
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -49,7 +50,10 @@ const modeOf = async (path: string) => (await stat(path)).mode & 0o777;
 
 const collect = () => {
   const warnings: string[] = [];
-  return { warn: (message: string) => warnings.push(message), warnings };
+  return {
+    warn: ({ sentence }: StoreWarning) => warnings.push(sentence),
+    warnings,
+  };
 };
 
 describe('secureStoreFiles', async () => {

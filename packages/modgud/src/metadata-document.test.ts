@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 
-import type { Log } from './log.ts';
 import { cacheLifetimeMs, createMetadataDocumentFetcher } from './metadata-document.ts';
 import type { Connect, MetadataResponse, ResolvedAddress } from './metadata-document.ts';
+import { createLogRecorder } from './testing/log-recorder.ts';
 
 const CLIENT_ID = 'https://chatgpt.com/oauth/client.json';
 const PUBLIC_ADDRESS = '93.184.215.14';
@@ -44,8 +44,7 @@ const setUp = ({
   timeoutMs?: number;
 } = {}) => {
   const clock = { now: 1_000_000 };
-  const lines: string[] = [];
-  const log: Log = { info: (line) => lines.push(line), warn: (line) => lines.push(line) };
+  const { entries, log } = createLogRecorder();
   const resolved: string[] = [];
   const connections: { address: string; url: string }[] = [];
   const fetchDocument = createMetadataDocumentFetcher({
@@ -62,7 +61,7 @@ const setUp = ({
     },
     timeoutMs,
   });
-  return { clock, connections, fetchDocument, lines, resolved };
+  return { clock, connections, entries, fetchDocument, resolved };
 };
 
 // A document of exactly `size` bytes.
@@ -129,7 +128,7 @@ describe('fetching a client metadata document', () => {
     ['an IPv4-mapped private address', '::ffff:192.168.1.1'],
     ['a unique-local address', 'fd00::5'],
   ])('refuses a host when any address it resolves to is %s', async (_, refused) => {
-    const { connections, fetchDocument, lines } = setUp({
+    const { connections, fetchDocument, entries } = setUp({
       addresses: [
         { address: PUBLIC_ADDRESS, family: 4 },
         { address: refused, family: refused.includes(':') ? 6 : 4 },
@@ -138,7 +137,7 @@ describe('fetching a client metadata document', () => {
 
     expect(await fetchDocument(CLIENT_ID)).toBeUndefined();
     expect(connections).toEqual([]);
-    expect(lines.join('\n')).toContain('chatgpt.com');
+    expect(entries.map((entry) => entry.fields.client)).toEqual(['chatgpt.com']);
   });
 
   test("refuses a host that resolves to an address of the host's own interfaces", async () => {
@@ -248,13 +247,16 @@ describe('fetching a client metadata document', () => {
   });
 
   test('a failure rejects without saying why to the caller, and logs the host', async () => {
-    const { fetchDocument, lines } = setUp({
+    const { fetchDocument, entries } = setUp({
       connect: async () => Promise.reject(new Error('ECONNREFUSED')),
     });
 
     expect(await fetchDocument(CLIENT_ID)).toBeUndefined();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('chatgpt.com');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.message).toBe(
+      'Could not use the client metadata document of {client}: {error}.',
+    );
+    expect(entries[0]?.fields.client).toBe('chatgpt.com');
   });
 
   test('fetches at most 30 times in any minute, across all clients', async () => {

@@ -391,7 +391,8 @@ export const createAdminListener = ({
     const label = loggable(clientLabel(request.clientId));
     if (failedCodes.wait('all') > 0) {
       log.warn(
-        `Refused a Pairing code for client ${label}: ${String(FAILED_CODES_LIMIT)} wrong codes in the last 10 minutes.`,
+        'Refused a Pairing code for client {client}: {limit} wrong codes in the last 10 minutes.',
+        { client: label, limit: FAILED_CODES_LIMIT },
       );
       return approvalPage(
         request,
@@ -422,13 +423,19 @@ export const createAdminListener = ({
     if (approved === undefined) {
       request.failures += 1;
       failedCodes.record('all');
-      log.warn(
-        `A wrong Pairing code was entered for client ${label} (${String(request.failures)} of ${String(FAILURES_PER_REQUEST)}).`,
-      );
+      log.warn('A wrong Pairing code was entered for client {client} ({failures} of {limit}).', {
+        client: label,
+        failures: request.failures,
+        limit: FAILURES_PER_REQUEST,
+      });
       if (request.failures >= FAILURES_PER_REQUEST) {
         pending.delete(request.id);
         log.warn(
-          `Ended the approval request of client ${label} after ${String(FAILURES_PER_REQUEST)} wrong Pairing codes.`,
+          'Ended the approval request of client {client} after {limit} wrong Pairing codes.',
+          {
+            client: label,
+            limit: FAILURES_PER_REQUEST,
+          },
         );
         return errorPage(
           400,
@@ -447,11 +454,11 @@ export const createAdminListener = ({
         'That Pairing code is wrong, expired, or already used. Check it, or run modgud pair for a new one.',
       );
     }
-    log.info(
-      `Approved client ${label}${
-        request.clientName === undefined ? '' : ` (${loggable(request.clientName)})`
-      } as authorization ${approved.authorizationId.slice(0, 8)}.`,
-    );
+    log.info('Approved client {client} as authorization {authorization}.', {
+      authorization: approved.authorizationId.slice(0, 8),
+      client: label,
+      clientName: request.clientName === undefined ? undefined : loggable(request.clientName),
+    });
     return finish(request, { code: approved.code });
   };
 
@@ -483,7 +490,9 @@ export const createAdminListener = ({
     }
     const action = form.get('action');
     if (action === 'deny') {
-      log.info(`Denied client ${loggable(clientLabel(pendingRequest.clientId))}.`);
+      log.info('Denied client {client}.', {
+        client: loggable(clientLabel(pendingRequest.clientId)),
+      });
       return finish(pendingRequest, { error: 'access_denied' });
     }
     if (action === 'approve') {
