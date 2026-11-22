@@ -44,6 +44,11 @@ describe('callerCapabilities', () => {
 // A value nested `levels` levels deep, the value itself being the first.
 const nested = (levels: number) => JSON.parse(nestedJson(levels)) as Record<string, unknown>;
 
+// Capabilities with a branch `depth` levels deep behind shallow siblings, under
+// a key or as an array's last item.
+const behindKey = (depth: number) => ({ later: nested(depth), tools: {} });
+const behindItem = (depth: number) => ({ list: [{}, 'one', nested(depth)] });
+
 describe('parseChildInitializeResult', () => {
   test('accepts a 2025-era result', () => {
     expect(parseChildInitializeResult(childResult)).toEqual(childResult);
@@ -78,9 +83,6 @@ describe('parseChildInitializeResult', () => {
   });
 
   test('refuses a too-deep branch behind shallow siblings', () => {
-    const behindKey = (depth: number) => ({ later: nested(depth), tools: {} });
-    const behindItem = (depth: number) => ({ list: [{}, 'one', nested(depth)] });
-
     expect(
       parseChildInitializeResult({ ...childResult, capabilities: behindKey(63) }),
     ).toBeDefined();
