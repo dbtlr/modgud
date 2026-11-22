@@ -697,6 +697,28 @@ describe('the version gate', () => {
   });
 });
 
+describe('a Child whose capabilities nest too deeply to compare', () => {
+  test('is stopped as an unsupported initialize result, with no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      const { entries, url } = await start({
+        stubEnv: { STUB_CAPABILITIES_DEPTH: '100000', STUB_MODE: 'raw' },
+      });
+
+      const failed = await post(url, { Authorization: 'Bearer harness-token' });
+      await Bun.sleep(100);
+
+      expect(failed.status).toBe(502);
+      expect(stoppedFor(entries, 'unsupported initialize result')).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
+});
+
 describe('a changed Child', () => {
   test('ends every Session when the new Child gives other capabilities', async () => {
     const { entries, url } = await start({

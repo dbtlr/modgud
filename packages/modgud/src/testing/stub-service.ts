@@ -10,7 +10,8 @@
 // - `exit`: exits with status 1 before reading anything.
 // - `raw`: answers `initialize` with the protocol version in `STUB_VERSION`
 //   (2025-11-25 by default) and the capabilities in `STUB_CAPABILITIES`
-//   (JSON, `{"tools":{}}` by default), `ping` and `tools/list` as an empty
+//   (JSON, `{"tools":{}}` by default; `STUB_CAPABILITIES_DEPTH` instead nests
+//   `{"a":...}` that many levels deep), `ping` and `tools/list` as an empty
 //   server would, and every other request with an error.
 //
 // `STUB_MODE` may list several modes, separated by commas, with
@@ -70,22 +71,24 @@ const readLines = async (handle: (message: Record<string, unknown>) => void) => 
   }
 };
 
+// The JSON text of capabilities nested `depth` levels deep. It is text because
+// stringifying a value this deep would overflow the stack.
+const nestedCapabilitiesJson = (depth: number) =>
+  `${'{"a":'.repeat(depth - 1)}{}${'}'.repeat(depth - 1)}`;
+
 const answerRaw = (message: Record<string, unknown>) => {
   const { id, method } = message;
   if (id === undefined || typeof method !== 'string') {
     return;
   }
   if (method === 'initialize') {
-    const capabilities: unknown = JSON.parse(process.env.STUB_CAPABILITIES ?? '{"tools":{}}');
-    write({
-      id,
-      jsonrpc: '2.0',
-      result: {
-        capabilities,
-        protocolVersion: process.env.STUB_VERSION ?? '2025-11-25',
-        serverInfo: { name: 'raw-stub', version: '1.0.0' },
-      },
-    });
+    const depth = Number(process.env.STUB_CAPABILITIES_DEPTH ?? 0);
+    const capabilities =
+      depth > 0 ? nestedCapabilitiesJson(depth) : (process.env.STUB_CAPABILITIES ?? '{"tools":{}}');
+    const version = JSON.stringify(process.env.STUB_VERSION ?? '2025-11-25');
+    process.stdout.write(
+      `{"id":${JSON.stringify(id)},"jsonrpc":"2.0","result":{"capabilities":${capabilities},"protocolVersion":${version},"serverInfo":{"name":"raw-stub","version":"1.0.0"}}}\n`,
+    );
   } else if (method === 'ping') {
     write({ id, jsonrpc: '2.0', result: {} });
   } else if (method === 'tools/list') {

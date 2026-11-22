@@ -26,6 +26,16 @@ import type {
   UpstreamFactory,
 } from './upstream.ts';
 
+// A message as a log excerpt. A message nested too deeply to stringify is
+// named as such instead of overflowing the stack.
+const excerptOfMessage = (message: JSONRPCErrorResponse | JSONRPCResultResponse) => {
+  try {
+    return excerpt(JSON.stringify(message), CHILD_LOG_LIMIT);
+  } catch {
+    return '(nested too deeply to log)';
+  }
+};
+
 const describeExit = ({ code, signal }: ExitStatus) =>
   signal === null ? `exited with status ${String(code)}` : `exited on ${signal}`;
 
@@ -241,7 +251,7 @@ class ChildUpstream implements Upstream {
       : undefined;
     if (result === undefined) {
       this.#options.log.warn('{service} {upstream} for {grant} answered initialize with {rpc}', {
-        rpc: excerpt(JSON.stringify(message), CHILD_LOG_LIMIT),
+        rpc: excerptOfMessage(message),
       });
       this.#failStart(
         isJSONRPCErrorResponse(message) ? 'initialize failed' : 'unsupported initialize result',

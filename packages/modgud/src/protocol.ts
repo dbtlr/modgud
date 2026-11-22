@@ -44,9 +44,34 @@ const isNewer = (version: string, than: string) => version > than;
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+// How many levels of objects and arrays a Service's capabilities may nest,
+// the capabilities object being the first. Comparing capabilities recurses, so
+// a deeper value from a Service could overflow the stack.
+export const MAX_CAPABILITIES_DEPTH = 64;
+
+// Whether `value` nests no deeper than `limit` levels, counting `value` as the
+// first. It walks with its own stack, so no depth can overflow it.
+const nestsWithin = (value: unknown, limit: number) => {
+  const pending: [unknown, number][] = [[value, 1]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [current, level] = next;
+    if (typeof current === 'object' && current !== null) {
+      if (level > limit) {
+        return false;
+      }
+      for (const child of Object.values(current)) {
+        pending.push([child, level + 1]);
+      }
+    }
+  }
+  return true;
+};
+
 // The part of a Child's initialize result that Modgud keeps and answers from.
 const childInitializeResult = z.looseObject({
-  capabilities: z.record(z.string(), z.unknown()),
+  capabilities: z
+    .record(z.string(), z.unknown())
+    .refine((capabilities) => nestsWithin(capabilities, MAX_CAPABILITIES_DEPTH)),
   instructions: z.string().optional(),
   protocolVersion: z.string().refine(isSupported),
   serverInfo: z.unknown(),
@@ -55,7 +80,8 @@ const childInitializeResult = z.looseObject({
 export type ChildInitializeResult = z.infer<typeof childInitializeResult>;
 
 // A Child's initialize result, or undefined when it is malformed or names a
-// version that is not a 2025-era version Modgud supports.
+// version that is not a 2025-era version Modgud supports, or whose
+// capabilities nest deeper than MAX_CAPABILITIES_DEPTH.
 export const parseChildInitializeResult = (result: unknown): ChildInitializeResult | undefined => {
   const parsed = childInitializeResult.safeParse(result);
   return parsed.success ? parsed.data : undefined;

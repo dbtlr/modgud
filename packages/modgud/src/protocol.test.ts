@@ -4,6 +4,7 @@ import {
   callerCapabilities,
   initializeAnswer,
   negotiatedVersion,
+  MAX_CAPABILITIES_DEPTH,
   parseChildInitializeResult,
   stillMatches,
 } from './protocol.ts';
@@ -40,6 +41,21 @@ describe('callerCapabilities', () => {
   });
 });
 
+// Capabilities whose deepest object is `levels` levels deep, counting the
+// capabilities object as the first. Every third level is an array.
+const nestedCapabilities = (levels: number) => {
+  let value: unknown = {};
+  for (let level = 2; level <= levels; level += 1) {
+    value = level % 3 === 0 ? [value] : { next: value };
+  }
+  return value as Record<string, unknown>;
+};
+
+const resultWith = (levels: number) => ({
+  ...childResult,
+  capabilities: nestedCapabilities(levels),
+});
+
 describe('parseChildInitializeResult', () => {
   test('accepts a 2025-era result', () => {
     expect(parseChildInitializeResult(childResult)).toEqual(childResult);
@@ -53,6 +69,11 @@ describe('parseChildInitializeResult', () => {
       undefined,
     );
     expect(parseChildInitializeResult({ protocolVersion: '2025-11-25' })).toBe(undefined);
+  });
+
+  test('accepts capabilities nested up to the depth limit and refuses deeper ones, arrays included', () => {
+    expect(parseChildInitializeResult(resultWith(MAX_CAPABILITIES_DEPTH))).toBeDefined();
+    expect(parseChildInitializeResult(resultWith(MAX_CAPABILITIES_DEPTH + 1))).toBe(undefined);
   });
 });
 
