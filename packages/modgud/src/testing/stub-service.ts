@@ -11,7 +11,7 @@
 // - `raw`: answers `initialize` with the protocol version in `STUB_VERSION`
 //   (2025-11-25 by default) and the capabilities in `STUB_CAPABILITIES`
 //   (JSON, `{"tools":{}}` by default; `STUB_CAPABILITIES_DEPTH` instead nests
-//   nested that many levels deep), `STUB_SERVER_INFO_DEPTH` likewise for
+//   them that many levels deep), `STUB_SERVER_INFO_DEPTH` likewise for
 //   `serverInfo`, `ping` and `tools/list` as an empty server would, and every
 //   other request with an error. With `STUB_NOTIFY_DEPTH` its `tools/list`
 //   first sends a notification nested that many levels deep.

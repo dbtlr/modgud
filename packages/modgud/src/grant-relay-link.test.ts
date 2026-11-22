@@ -189,33 +189,36 @@ test('one initialize with a missing bearer file starts one Link and records one 
   expect(initializes()).toBe(0);
 });
 
-test('a Link whose capabilities nest too deeply to compare fails its start and answers the waiting request', async () => {
-  const unhandled: unknown[] = [];
-  const record = (reason: unknown) => unhandled.push(reason);
-  process.on('unhandledRejection', record);
-  try {
-    const depth = 100_000;
-    const { errorTo, relay, session } = await fixture({
-      // A Session given capabilities earlier, so a start compares them.
-      given: { capabilities: '{}', protocolVersion: '2025-11-25' },
-      respond: (request) =>
-        httpMethod(request) === 'initialize'
-          ? new Response(
-              `{"id":${JSON.stringify((request.message as { id: number }).id)},"jsonrpc":"2.0","result":{"capabilities":${nestedJson(depth)},"protocolVersion":"2025-11-25","serverInfo":{"name":"s","version":"1"}}}`,
-              { headers: { 'Mcp-Session-Id': 'session', 'content-type': 'application/json' } },
-            )
-          : undefined,
-    });
-    relay.forward(session, toolRequest(1));
-    await eventually(() => errorTo(1) !== undefined);
-    await Bun.sleep(50);
+test.each(['capabilities', 'serverInfo'])(
+  'a Link with over-deep %s fails its start and answers the waiting request',
+  async (field) => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      const depth = 100_000;
+      const { errorTo, relay, session } = await fixture({
+        // A Session given capabilities earlier, so a start compares them.
+        given: { capabilities: '{}', protocolVersion: '2025-11-25' },
+        respond: (request) =>
+          httpMethod(request) === 'initialize'
+            ? new Response(
+                `{"id":${JSON.stringify((request.message as { id: number }).id)},"jsonrpc":"2.0","result":{"capabilities":${field === 'capabilities' ? nestedJson(depth) : '{}'},"protocolVersion":"2025-11-25","serverInfo":${field === 'serverInfo' ? nestedJson(depth) : '{"name":"s","version":"1"}'}}}`,
+                { headers: { 'Mcp-Session-Id': 'session', 'content-type': 'application/json' } },
+              )
+            : undefined,
+      });
+      relay.forward(session, toolRequest(1));
+      await eventually(() => errorTo(1) !== undefined);
+      await Bun.sleep(50);
 
-    expect(errorTo(1)).toBe(ERRORS.unavailable.message);
-    expect(unhandled).toEqual([]);
-  } finally {
-    process.off('unhandledRejection', record);
-  }
-});
+      expect(errorTo(1)).toBe(ERRORS.unavailable.message);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  },
+);
 
 test('after a 404 on the session id, the next request starts a new Link at once', async () => {
   const { answerTo, errorTo, initializes, relay, session } = await fixture({
