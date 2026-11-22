@@ -76,6 +76,24 @@ describe('parseChildInitializeResult', () => {
 
     expect(parseChildInitializeResult({ ...childResult, capabilities })).toBeDefined();
   });
+
+  test('refuses a too-deep branch behind shallow siblings', () => {
+    const behindKey = (depth: number) => ({ later: nested(depth), tools: {} });
+    const behindItem = (depth: number) => ({ list: [{}, 'one', nested(depth)] });
+
+    expect(
+      parseChildInitializeResult({ ...childResult, capabilities: behindKey(63) }),
+    ).toBeDefined();
+    expect(parseChildInitializeResult({ ...childResult, capabilities: behindKey(64) })).toBe(
+      undefined,
+    );
+    expect(
+      parseChildInitializeResult({ ...childResult, capabilities: behindItem(62) }),
+    ).toBeDefined();
+    expect(parseChildInitializeResult({ ...childResult, capabilities: behindItem(63) })).toBe(
+      undefined,
+    );
+  });
 });
 
 describe('initializeAnswer and stillMatches', () => {

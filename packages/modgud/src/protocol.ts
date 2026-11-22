@@ -52,8 +52,8 @@ const MAX_RESULT_DEPTH = 64;
 
 // Whether `value` nests no deeper than `limit` levels, counting `value` as the
 // first. It recurses only through levels within `limit`, so no input can
-// overflow the stack, and it holds one path at a time, so a wide value costs no
-// more memory than a narrow one.
+// overflow the stack. It holds one path at a time: an array costs nothing
+// beyond itself, and an object on the path one reference per key.
 const nestsWithin = (value: unknown, limit: number, level = 1): boolean => {
   if (typeof value !== 'object' || value === null) {
     return true;
