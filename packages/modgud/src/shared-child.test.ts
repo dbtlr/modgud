@@ -697,6 +697,56 @@ describe('the version gate', () => {
   });
 });
 
+describe('a Child whose initialize result nests too deeply', () => {
+  test.each(['STUB_CAPABILITIES_DEPTH', 'STUB_SERVER_INFO_DEPTH'])(
+    'with %s is stopped as an unsupported initialize result, with no unhandled rejection',
+    async (variable) => {
+      const unhandled: unknown[] = [];
+      const record = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', record);
+      try {
+        const { entries, url } = await start({
+          stubEnv: { STUB_MODE: 'raw', [variable]: '100000' },
+        });
+
+        const failed = await post(url, { Authorization: 'Bearer harness-token' });
+        await Bun.sleep(100);
+
+        expect(failed.status).toBe(502);
+        expect(stoppedFor(entries, 'unsupported initialize result')).toBe(true);
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', record);
+      }
+    },
+  );
+});
+
+describe('a running Child that sends a notification nested too deeply to log', () => {
+  test('still answers the request that follows, with no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      const { entries, url } = await start({
+        stubEnv: { STUB_MODE: 'raw', STUB_NOTIFY_DEPTH: '100000' },
+      });
+      const { headers } = await openRawSession(url);
+
+      const first = await requestOn(url, headers, { id: 1, method: 'tools/list' });
+      const second = await requestOn(url, headers, { id: 2, method: 'ping' });
+      await Bun.sleep(100);
+
+      expect(first.messages).toEqual([{ id: 1, jsonrpc: '2.0', result: { tools: [] } }]);
+      expect(second.messages).toEqual([{ id: 2, jsonrpc: '2.0', result: {} }]);
+      expect(entries.some((entry) => entry.fields.rpc === '(nested too deeply to log)')).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
+});
+
 describe('a changed Child', () => {
   test('ends every Session when the new Child gives other capabilities', async () => {
     const { entries, url } = await start({

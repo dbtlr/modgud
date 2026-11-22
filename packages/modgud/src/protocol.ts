@@ -44,18 +44,42 @@ const isNewer = (version: string, than: string) => version > than;
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+// How many levels of objects and arrays a Service's capabilities or server
+// information may nest, the field's own value being the first. Comparing
+// capabilities and answering a Caller with either recurse over them, so a
+// deeper value from a Service could overflow the stack.
+const MAX_RESULT_DEPTH = 64;
+
+// Whether `value` nests no deeper than `limit` levels, counting `value` as the
+// first. It recurses only through levels within `limit`, so no input can
+// overflow the stack. It holds one path at a time: an array costs nothing
+// beyond itself, and an object on the path one reference per key.
+const nestsWithin = (value: unknown, limit: number, level = 1): boolean => {
+  if (typeof value !== 'object' || value === null) {
+    return true;
+  }
+  if (level > limit) {
+    return false;
+  }
+  const children: unknown[] = Array.isArray(value) ? value : Object.values(value);
+  return children.every((child) => nestsWithin(child, limit, level + 1));
+};
+
 // The part of a Child's initialize result that Modgud keeps and answers from.
 const childInitializeResult = z.looseObject({
-  capabilities: z.record(z.string(), z.unknown()),
+  capabilities: z
+    .record(z.string(), z.unknown())
+    .refine((capabilities) => nestsWithin(capabilities, MAX_RESULT_DEPTH)),
   instructions: z.string().optional(),
   protocolVersion: z.string().refine(isSupported),
-  serverInfo: z.unknown(),
+  serverInfo: z.unknown().refine((serverInfo) => nestsWithin(serverInfo, MAX_RESULT_DEPTH)),
 });
 
 export type ChildInitializeResult = z.infer<typeof childInitializeResult>;
 
 // A Child's initialize result, or undefined when it is malformed or names a
-// version that is not a 2025-era version Modgud supports.
+// version that is not a 2025-era version Modgud supports, or whose
+// capabilities or server information nest deeper than MAX_RESULT_DEPTH.
 export const parseChildInitializeResult = (result: unknown): ChildInitializeResult | undefined => {
   const parsed = childInitializeResult.safeParse(result);
   return parsed.success ? parsed.data : undefined;

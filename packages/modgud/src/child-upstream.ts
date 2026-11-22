@@ -15,7 +15,7 @@ import type {
 import { Child } from './child.ts';
 import type { ExitStatus } from './child.ts';
 import type { ProcessServiceConfig } from './config.ts';
-import { CHILD_LOG_LIMIT, excerpt, loggable } from './log.ts';
+import { CHILD_LOG_LIMIT, excerpt, excerptOfMessage, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { initializeRequest, parseChildInitializeResult } from './protocol.ts';
 import type {
@@ -241,7 +241,7 @@ class ChildUpstream implements Upstream {
       : undefined;
     if (result === undefined) {
       this.#options.log.warn('{service} {upstream} for {grant} answered initialize with {rpc}', {
-        rpc: excerpt(JSON.stringify(message), CHILD_LOG_LIMIT),
+        rpc: excerptOfMessage(message),
       });
       this.#failStart(
         isJSONRPCErrorResponse(message) ? 'initialize failed' : 'unsupported initialize result',

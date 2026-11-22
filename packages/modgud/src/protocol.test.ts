@@ -7,6 +7,7 @@ import {
   parseChildInitializeResult,
   stillMatches,
 } from './protocol.ts';
+import { nestedJson } from './testing/nested-json.ts';
 
 const childResult = {
   capabilities: { tools: { listChanged: true } },
@@ -40,6 +41,14 @@ describe('callerCapabilities', () => {
   });
 });
 
+// A value nested `levels` levels deep, the value itself being the first.
+const nested = (levels: number) => JSON.parse(nestedJson(levels)) as Record<string, unknown>;
+
+// Capabilities with a branch `depth` levels deep behind shallow siblings, under
+// a key or as an array's last item.
+const behindKey = (depth: number) => ({ later: nested(depth), tools: {} });
+const behindItem = (depth: number) => ({ list: [{}, 'one', nested(depth)] });
+
 describe('parseChildInitializeResult', () => {
   test('accepts a 2025-era result', () => {
     expect(parseChildInitializeResult(childResult)).toEqual(childResult);
@@ -53,6 +62,39 @@ describe('parseChildInitializeResult', () => {
       undefined,
     );
     expect(parseChildInitializeResult({ protocolVersion: '2025-11-25' })).toBe(undefined);
+  });
+
+  test.each(['capabilities', 'serverInfo'] as const)(
+    'accepts %s nested 64 levels deep and refuses 65, arrays included',
+    (field) => {
+      expect(parseChildInitializeResult({ ...childResult, [field]: nested(64) })).toBeDefined();
+      expect(parseChildInitializeResult({ ...childResult, [field]: nested(65) })).toBe(undefined);
+    },
+  );
+
+  test('accepts a primitive inside an object at level 64', () => {
+    const deepest = { number: 1, text: 'one' };
+    let capabilities: Record<string, unknown> = deepest;
+    for (let level = 63; level >= 1; level -= 1) {
+      capabilities = { next: capabilities };
+    }
+
+    expect(parseChildInitializeResult({ ...childResult, capabilities })).toBeDefined();
+  });
+
+  test('refuses a too-deep branch behind shallow siblings', () => {
+    expect(
+      parseChildInitializeResult({ ...childResult, capabilities: behindKey(63) }),
+    ).toBeDefined();
+    expect(parseChildInitializeResult({ ...childResult, capabilities: behindKey(64) })).toBe(
+      undefined,
+    );
+    expect(
+      parseChildInitializeResult({ ...childResult, capabilities: behindItem(62) }),
+    ).toBeDefined();
+    expect(parseChildInitializeResult({ ...childResult, capabilities: behindItem(63) })).toBe(
+      undefined,
+    );
   });
 });
 

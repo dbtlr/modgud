@@ -20,7 +20,7 @@ import type {
 } from '@modelcontextprotocol/server';
 
 import { Backoff } from './backoff.ts';
-import { CHILD_LOG_LIMIT, excerpt } from './log.ts';
+import { CHILD_LOG_LIMIT, excerpt, excerptOfMessage } from './log.ts';
 import type { Log } from './log.ts';
 import {
   emptyResult,
@@ -566,7 +566,7 @@ export class GrantRelay {
       }
       default: {
         this.#log.info('{service} {upstream} for {grant} notification: {rpc}', {
-          rpc: excerpt(JSON.stringify(message), CHILD_LOG_LIMIT),
+          rpc: excerptOfMessage(message),
         });
       }
     }
