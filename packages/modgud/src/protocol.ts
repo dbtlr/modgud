@@ -51,21 +51,18 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
 const MAX_RESULT_DEPTH = 64;
 
 // Whether `value` nests no deeper than `limit` levels, counting `value` as the
-// first. It walks with its own stack, so no depth can overflow it.
-const nestsWithin = (value: unknown, limit: number) => {
-  const pending: [unknown, number][] = [[value, 1]];
-  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
-    const [current, level] = next;
-    if (typeof current === 'object' && current !== null) {
-      if (level > limit) {
-        return false;
-      }
-      for (const child of Object.values(current)) {
-        pending.push([child, level + 1]);
-      }
-    }
+// first. It recurses only through levels within `limit`, so no input can
+// overflow the stack, and it holds one path at a time, so a wide value costs no
+// more memory than a narrow one.
+const nestsWithin = (value: unknown, limit: number, level = 1): boolean => {
+  if (typeof value !== 'object' || value === null) {
+    return true;
   }
-  return true;
+  if (level > limit) {
+    return false;
+  }
+  const children: unknown[] = Array.isArray(value) ? value : Object.values(value);
+  return children.every((child) => nestsWithin(child, limit, level + 1));
 };
 
 // The part of a Child's initialize result that Modgud keeps and answers from.

@@ -90,8 +90,8 @@ const answerRaw = (message: Record<string, unknown>) => {
   if (method === 'initialize') {
     const capabilities =
       nestedFromEnvironment('STUB_CAPABILITIES_DEPTH') ??
-      process.env.STUB_CAPABILITIES ??
-      '{"tools":{}}';
+      // Parsed and written again, so the answer stays on one line.
+      JSON.stringify(JSON.parse(process.env.STUB_CAPABILITIES ?? '{"tools":{}}'));
     const serverInfo =
       nestedFromEnvironment('STUB_SERVER_INFO_DEPTH') ?? '{"name":"raw-stub","version":"1.0.0"}';
     const version = JSON.stringify(process.env.STUB_VERSION ?? '2025-11-25');
