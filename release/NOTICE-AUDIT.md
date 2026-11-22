@@ -9,23 +9,6 @@ The complete npm notice collection retains full licenses, copyrights, and Loom's
 The broad 109-package collection includes build tools. Eleven build-only tarballs omit notice files.
 Those omissions do not establish a gap in the six-package distributed application graph.
 
-## Loom 0.20.0
-
-The 0.1.0 npm notice collection was gathered from the Loom 0.18.0 packages.
-The source now locks all five `@loomcli` packages at 0.20.0. No other dependency version or integrity changed.
-Each locked 0.20.0 tarball matches its `bun.lock` integrity, and each package keeps its license expression.
-The compiled application graph still holds the same six packages: `@loomcli/core`, `@loomcli/plugins`, `@modelcontextprotocol/core`, `@modelcontextprotocol/server`, `valibot`, and `zod`.
-`@loomcli/core` 0.20.0 now contributes one bundled module, `dist/index.js`, so the module lists in `bundled-npm-modules.json` change.
-The runtime closure still has the same ten packages; only its three `@loomcli` entries change version.
-
-Of the notice files the 0.1.0 collection retains, the 0.20.0 tarballs change these:
-
-- `@loomcli/core`: `NOTICE` is rewritten. It now says the source modules it names are compiled into the bundled files under `dist` and keep their license headers there, and it names those modules by source path. `LICENSE` and the files under `licenses/` are unchanged.
-- `@loomcli/plugins`: `NOTICE` is rewritten in the same way and records the changed shell completion scripts. `LICENSE` and `licenses/cobra-LICENSE.txt` are unchanged.
-- `@loomcli/loom`, `@loomcli/testing`, and `@loomcli/validators`: `LICENSE` is unchanged.
-
-The next release packages npm notices collected from the locked 0.20.0 tarballs, with `npm-manifest.json`, `app-runtime-closure.json`, and `bundled-npm-modules.json` regenerated to match.
-
 The executable also contains Bun 1.4.4, revision `38afee6c8`.
 The Bun audit is separate from the npm graph. Bun's own LICENSE.md enumerates linked libraries and embedded components.
 `bun-components.json` records native dependency revisions and archive checksums read from pinned Bun build recipes.
@@ -57,3 +40,22 @@ No build of the modified library, or independent reproduction of Bun's upstream 
 The release ICU is 78.3, pinned separately in WebKit `icu/source.json`; the vendored compatibility headers are 74.2.
 ICU 78.3 sources match upstream pin SHA-256 `3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0`.
 Its full license files accompany the runtime notices. WebKit icu/, shell/, and .github/ release scripts and patches accompany the rebuild sources.
+
+## Loom 0.20.0
+
+The 0.1.0 npm notice collection was gathered from the Loom 0.18.0 packages.
+The source now locks all five `@loomcli` packages at 0.20.0. No other dependency version or integrity changed.
+Each locked 0.20.0 tarball matches its `bun.lock` integrity.
+`@loomcli/core`, `@loomcli/plugins`, `@loomcli/validators`, and `@loomcli/testing` keep their license expressions.
+`@loomcli/loom`, a build tool outside the runtime closure, drops `BSD-3-Clause` from its expression, which is now `MIT AND ISC AND Unicode-3.0`.
+The compiled application graph still holds the same six packages: `@loomcli/core`, `@loomcli/plugins`, `@modelcontextprotocol/core`, `@modelcontextprotocol/server`, `valibot`, and `zod`.
+`@loomcli/core` 0.20.0 now contributes one bundled module, `dist/index.js`, so the module lists in `bundled-npm-modules.json` change.
+The runtime closure still has the same ten packages; only its three `@loomcli` entries change version.
+
+Of the notice files the 0.1.0 collection retains, the 0.20.0 tarballs change these:
+
+- `@loomcli/core`: `NOTICE` is rewritten. It now says the source modules it names are compiled into the bundled files under `dist` and keep their license headers there, and it names those modules by source path. `LICENSE` and the files under `licenses/` are unchanged.
+- `@loomcli/plugins`: `NOTICE` is rewritten in the same way and records the changed shell completion scripts. `LICENSE` and `licenses/cobra-LICENSE.txt` are unchanged.
+- `@loomcli/loom`, `@loomcli/testing`, and `@loomcli/validators`: `LICENSE` is unchanged.
+
+The next release packages npm notices collected from the locked 0.20.0 tarballs, with `npm-manifest.json`, `app-runtime-closure.json`, and `bundled-npm-modules.json` regenerated to match.
