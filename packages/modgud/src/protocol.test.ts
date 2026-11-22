@@ -4,10 +4,10 @@ import {
   callerCapabilities,
   initializeAnswer,
   negotiatedVersion,
-  MAX_CAPABILITIES_DEPTH,
   parseChildInitializeResult,
   stillMatches,
 } from './protocol.ts';
+import { nestedJson } from './testing/nested-json.ts';
 
 const childResult = {
   capabilities: { tools: { listChanged: true } },
@@ -41,20 +41,8 @@ describe('callerCapabilities', () => {
   });
 });
 
-// Capabilities whose deepest object is `levels` levels deep, counting the
-// capabilities object as the first. Every third level is an array.
-const nestedCapabilities = (levels: number) => {
-  let value: unknown = {};
-  for (let level = 2; level <= levels; level += 1) {
-    value = level % 3 === 0 ? [value] : { next: value };
-  }
-  return value as Record<string, unknown>;
-};
-
-const resultWith = (levels: number) => ({
-  ...childResult,
-  capabilities: nestedCapabilities(levels),
-});
+// A value nested `levels` levels deep, the value itself being the first.
+const nested = (levels: number) => JSON.parse(nestedJson(levels)) as Record<string, unknown>;
 
 describe('parseChildInitializeResult', () => {
   test('accepts a 2025-era result', () => {
@@ -71,9 +59,22 @@ describe('parseChildInitializeResult', () => {
     expect(parseChildInitializeResult({ protocolVersion: '2025-11-25' })).toBe(undefined);
   });
 
-  test('accepts capabilities nested up to the depth limit and refuses deeper ones, arrays included', () => {
-    expect(parseChildInitializeResult(resultWith(MAX_CAPABILITIES_DEPTH))).toBeDefined();
-    expect(parseChildInitializeResult(resultWith(MAX_CAPABILITIES_DEPTH + 1))).toBe(undefined);
+  test.each(['capabilities', 'serverInfo'] as const)(
+    'accepts %s nested 64 levels deep and refuses 65, arrays included',
+    (field) => {
+      expect(parseChildInitializeResult({ ...childResult, [field]: nested(64) })).toBeDefined();
+      expect(parseChildInitializeResult({ ...childResult, [field]: nested(65) })).toBe(undefined);
+    },
+  );
+
+  test('accepts a primitive inside an object at level 64', () => {
+    const deepest = { number: 1, text: 'one' };
+    let capabilities: Record<string, unknown> = deepest;
+    for (let level = 63; level >= 1; level -= 1) {
+      capabilities = { next: capabilities };
+    }
+
+    expect(parseChildInitializeResult({ ...childResult, capabilities })).toBeDefined();
   });
 });
 

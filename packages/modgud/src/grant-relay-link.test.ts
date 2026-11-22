@@ -14,6 +14,7 @@ import { createLink } from './link.ts';
 import type { LinkOptions } from './link.ts';
 import { ERRORS } from './protocol.ts';
 import { createLogRecorder } from './testing/log-recorder.ts';
+import { nestedJson } from './testing/nested-json.ts';
 import { httpMethod, httpStream, startStubHttpService } from './testing/stub-http-service.ts';
 import type { StubHttpRequest } from './testing/stub-http-service.ts';
 
@@ -200,7 +201,7 @@ test('a Link whose capabilities nest too deeply to compare fails its start and a
       respond: (request) =>
         httpMethod(request) === 'initialize'
           ? new Response(
-              `{"id":${JSON.stringify((request.message as { id: number }).id)},"jsonrpc":"2.0","result":{"capabilities":${'{"a":'.repeat(depth)}{}${'}'.repeat(depth)},"protocolVersion":"2025-11-25","serverInfo":{"name":"s","version":"1"}}}`,
+              `{"id":${JSON.stringify((request.message as { id: number }).id)},"jsonrpc":"2.0","result":{"capabilities":${nestedJson(depth)},"protocolVersion":"2025-11-25","serverInfo":{"name":"s","version":"1"}}}`,
               { headers: { 'Mcp-Session-Id': 'session', 'content-type': 'application/json' } },
             )
           : undefined,

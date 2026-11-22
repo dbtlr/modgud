@@ -15,7 +15,7 @@ import type {
 import { Child } from './child.ts';
 import type { ExitStatus } from './child.ts';
 import type { ProcessServiceConfig } from './config.ts';
-import { CHILD_LOG_LIMIT, excerpt, loggable } from './log.ts';
+import { CHILD_LOG_LIMIT, excerpt, excerptOfMessage, loggable } from './log.ts';
 import type { Log } from './log.ts';
 import { initializeRequest, parseChildInitializeResult } from './protocol.ts';
 import type {
@@ -25,16 +25,6 @@ import type {
   UpstreamEvents,
   UpstreamFactory,
 } from './upstream.ts';
-
-// A message as a log excerpt. A message nested too deeply to stringify is
-// named as such instead of overflowing the stack.
-const excerptOfMessage = (message: JSONRPCErrorResponse | JSONRPCResultResponse) => {
-  try {
-    return excerpt(JSON.stringify(message), CHILD_LOG_LIMIT);
-  } catch {
-    return '(nested too deeply to log)';
-  }
-};
 
 const describeExit = ({ code, signal }: ExitStatus) =>
   signal === null ? `exited with status ${String(code)}` : `exited on ${signal}`;

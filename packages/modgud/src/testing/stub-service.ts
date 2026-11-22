@@ -11,8 +11,10 @@
 // - `raw`: answers `initialize` with the protocol version in `STUB_VERSION`
 //   (2025-11-25 by default) and the capabilities in `STUB_CAPABILITIES`
 //   (JSON, `{"tools":{}}` by default; `STUB_CAPABILITIES_DEPTH` instead nests
-//   `{"a":...}` that many levels deep), `ping` and `tools/list` as an empty
-//   server would, and every other request with an error.
+//   nested that many levels deep), `STUB_SERVER_INFO_DEPTH` likewise for
+//   `serverInfo`, `ping` and `tools/list` as an empty server would, and every
+//   other request with an error. With `STUB_NOTIFY_DEPTH` its `tools/list`
+//   first sends a notification nested that many levels deep.
 //
 // `STUB_MODE` may list several modes, separated by commas, with
 // `STUB_COUNTER` naming a file that counts starts: the nth start runs the nth
@@ -27,6 +29,8 @@ import { isJSONRPCResponse, McpServer } from '@modelcontextprotocol/server';
 import type { JSONRPCMessage, JSONRPCResponse } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
+
+import { nestedJson } from './nested-json.ts';
 
 // This start's mode, read from `STUB_MODE` and the start counter.
 const currentMode = async () => {
@@ -71,10 +75,12 @@ const readLines = async (handle: (message: Record<string, unknown>) => void) => 
   }
 };
 
-// The JSON text of capabilities nested `depth` levels deep. It is text because
-// stringifying a value this deep would overflow the stack.
-const nestedCapabilitiesJson = (depth: number) =>
-  `${'{"a":'.repeat(depth - 1)}{}${'}'.repeat(depth - 1)}`;
+// The JSON text of the environment variable `name` as a number of levels, or
+// undefined when it is unset.
+const nestedFromEnvironment = (name: string) => {
+  const depth = Number(process.env[name] ?? 0);
+  return depth > 0 ? nestedJson(depth) : undefined;
+};
 
 const answerRaw = (message: Record<string, unknown>) => {
   const { id, method } = message;
@@ -82,16 +88,25 @@ const answerRaw = (message: Record<string, unknown>) => {
     return;
   }
   if (method === 'initialize') {
-    const depth = Number(process.env.STUB_CAPABILITIES_DEPTH ?? 0);
     const capabilities =
-      depth > 0 ? nestedCapabilitiesJson(depth) : (process.env.STUB_CAPABILITIES ?? '{"tools":{}}');
+      nestedFromEnvironment('STUB_CAPABILITIES_DEPTH') ??
+      process.env.STUB_CAPABILITIES ??
+      '{"tools":{}}';
+    const serverInfo =
+      nestedFromEnvironment('STUB_SERVER_INFO_DEPTH') ?? '{"name":"raw-stub","version":"1.0.0"}';
     const version = JSON.stringify(process.env.STUB_VERSION ?? '2025-11-25');
     process.stdout.write(
-      `{"id":${JSON.stringify(id)},"jsonrpc":"2.0","result":{"capabilities":${capabilities},"protocolVersion":${version},"serverInfo":{"name":"raw-stub","version":"1.0.0"}}}\n`,
+      `{"id":${JSON.stringify(id)},"jsonrpc":"2.0","result":{"capabilities":${capabilities},"protocolVersion":${version},"serverInfo":${serverInfo}}}\n`,
     );
   } else if (method === 'ping') {
     write({ id, jsonrpc: '2.0', result: {} });
   } else if (method === 'tools/list') {
+    const notification = nestedFromEnvironment('STUB_NOTIFY_DEPTH');
+    if (notification !== undefined) {
+      process.stdout.write(
+        `{"jsonrpc":"2.0","method":"notifications/odd","params":{"x":${notification}}}\n`,
+      );
+    }
     write({ id, jsonrpc: '2.0', result: { tools: [] } });
   } else {
     write({ error: { code: -32_601, message: 'Method not found' }, id, jsonrpc: '2.0' });
