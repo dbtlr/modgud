@@ -40,8 +40,9 @@ export const excerpt = (text: string, limit: number) =>
   // oxlint-disable-next-line typescript/no-misused-spread -- code points, as loggable counts them
   loggable([...text].slice(0, limit).join(''));
 
-// A message from a Child as a log excerpt. A message nested too deeply to
-// stringify is named as such instead of overflowing the stack.
+// A message from a Service, a Child's or a Link's, as a log excerpt. A message
+// nested too deeply to stringify is named as such instead of overflowing the
+// stack.
 export const excerptOfMessage = (message: unknown) => {
   try {
     return excerpt(JSON.stringify(message), CHILD_LOG_LIMIT);
