@@ -44,11 +44,12 @@ const isNewer = (version: string, than: string) => version > than;
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-// How many levels of objects and arrays a Service's capabilities or server
-// information may nest, the field's own value being the first. Comparing
-// capabilities and answering a Caller with either recurse over them, so a
-// deeper value from a Service could overflow the stack.
-const MAX_RESULT_DEPTH = 64;
+// How many levels of objects and arrays a value from a Service may nest, the
+// value itself being the first: its capabilities and server information, and
+// each response's result or error and each notification's params. Comparing,
+// serializing, and answering a Caller with such a value recurse over it, so a
+// value nested far deeper could overflow the stack; 64 is far below that.
+const MAX_SERVICE_VALUE_DEPTH = 64;
 
 // Whether `value` nests no deeper than `limit` levels, counting `value` as the
 // first. It recurses only through levels within `limit`, so no input can
@@ -65,21 +66,27 @@ const nestsWithin = (value: unknown, limit: number, level = 1): boolean => {
   return children.every((child) => nestsWithin(child, limit, level + 1));
 };
 
+// Whether a value a Service sent, such as a result or notification
+// parameters, nests within MAX_SERVICE_VALUE_DEPTH. Delivering a deeper one would
+// overflow the stack when it is serialized for a Caller.
+export const nestsWithinServiceDepth = (value: unknown) =>
+  nestsWithin(value, MAX_SERVICE_VALUE_DEPTH);
+
 // The part of a Child's initialize result that Modgud keeps and answers from.
 const childInitializeResult = z.looseObject({
   capabilities: z
     .record(z.string(), z.unknown())
-    .refine((capabilities) => nestsWithin(capabilities, MAX_RESULT_DEPTH)),
+    .refine((capabilities) => nestsWithin(capabilities, MAX_SERVICE_VALUE_DEPTH)),
   instructions: z.string().optional(),
   protocolVersion: z.string().refine(isSupported),
-  serverInfo: z.unknown().refine((serverInfo) => nestsWithin(serverInfo, MAX_RESULT_DEPTH)),
+  serverInfo: z.unknown().refine((serverInfo) => nestsWithin(serverInfo, MAX_SERVICE_VALUE_DEPTH)),
 });
 
 export type ChildInitializeResult = z.infer<typeof childInitializeResult>;
 
 // A Child's initialize result, or undefined when it is malformed or names a
 // version that is not a 2025-era version Modgud supports, or whose
-// capabilities or server information nest deeper than MAX_RESULT_DEPTH.
+// capabilities or server information nest deeper than MAX_SERVICE_VALUE_DEPTH.
 export const parseChildInitializeResult = (result: unknown): ChildInitializeResult | undefined => {
   const parsed = childInitializeResult.safeParse(result);
   return parsed.success ? parsed.data : undefined;
@@ -149,6 +156,7 @@ export const ERRORS = {
   methodNotFound: { code: -32_601, message: 'Method not found' },
   sessionEnded: { code: -32_603, message: 'The session ended' },
   stopped: { code: -32_603, message: 'The Service stopped before it answered' },
+  tooDeep: { code: -32_603, message: 'The Service answered with a value nested too deeply' },
   tooManyRequests: { code: -32_000, message: 'Too many requests are open for this Grant' },
   unavailable: { code: -32_603, message: 'The Service is unavailable' },
   unreachable: { code: -32_603, message: 'The Service could not be reached' },

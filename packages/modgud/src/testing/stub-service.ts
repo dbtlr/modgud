@@ -14,7 +14,11 @@
 //   them that many levels deep), `STUB_SERVER_INFO_DEPTH` likewise for
 //   `serverInfo`, `ping` and `tools/list` as an empty server would, and every
 //   other request with an error. With `STUB_NOTIFY_DEPTH` its `tools/list`
-//   first sends a notification nested that many levels deep.
+//   first sends a notification nested that many levels deep. Its `tools/call`
+//   answers with a result whose `x` nests `STUB_RESULT_DEPTH` levels deep, so
+//   the result nests one level more (`x` is an empty object when unset), after
+//   a `notifications/progress` for the call's progress token whose params' `x`
+//   nests `STUB_PROGRESS_DEPTH` levels deep when that is set.
 //
 // `STUB_MODE` may list several modes, separated by commas, with
 // `STUB_COUNTER` naming a file that counts starts: the nth start runs the nth
@@ -30,6 +34,7 @@ import type { JSONRPCMessage, JSONRPCResponse } from '@modelcontextprotocol/serv
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 
+import { isRecord } from '../protocol.ts';
 import { nestedJson } from './nested-json.ts';
 
 // This start's mode, read from `STUB_MODE` and the start counter.
@@ -82,6 +87,21 @@ const nestedFromEnvironment = (name: string) => {
   return depth > 0 ? nestedJson(depth) : undefined;
 };
 
+// Answers a raw-mode `tools/call`, with the deep values the environment asks for.
+const answerRawCall = (message: Record<string, unknown>, id: unknown) => {
+  const { params } = message;
+  const meta = isRecord(params) ? params._meta : undefined;
+  const progress = nestedFromEnvironment('STUB_PROGRESS_DEPTH');
+  const token = isRecord(meta) ? meta.progressToken : undefined;
+  if (progress !== undefined && token !== undefined) {
+    process.stdout.write(
+      `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1,"progressToken":${JSON.stringify(token)},"x":${progress}}}\n`,
+    );
+  }
+  const result = nestedFromEnvironment('STUB_RESULT_DEPTH') ?? '{}';
+  process.stdout.write(`{"id":${JSON.stringify(id)},"jsonrpc":"2.0","result":{"x":${result}}}\n`);
+};
+
 const answerRaw = (message: Record<string, unknown>) => {
   const { id, method } = message;
   if (id === undefined || typeof method !== 'string') {
@@ -108,6 +128,8 @@ const answerRaw = (message: Record<string, unknown>) => {
       );
     }
     write({ id, jsonrpc: '2.0', result: { tools: [] } });
+  } else if (method === 'tools/call') {
+    answerRawCall(message, id);
   } else {
     write({ error: { code: -32_601, message: 'Method not found' }, id, jsonrpc: '2.0' });
   }

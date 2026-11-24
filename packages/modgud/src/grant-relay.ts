@@ -26,6 +26,7 @@ import {
   emptyResult,
   ERRORS,
   errorResponse,
+  nestsWithinServiceDepth,
   notificationParam,
   renumbered,
   requestProgressToken,
@@ -106,6 +107,9 @@ type Run = {
   stopping: boolean;
   timers: { idle?: Timer; reset?: Timer };
 };
+
+// How many code points of a JSON-RPC method name from a Service the log keeps.
+const METHOD_LOG_LIMIT = 200;
 
 const sameId = (a: RequestId, b: RequestId) => typeof a === typeof b && a === b;
 
@@ -517,6 +521,16 @@ export class GrantRelay {
       return;
     }
     this.#forget(entry);
+    // A value nested too deeply would overflow the stack when it is
+    // serialized for the Caller, which would then get no answer at all.
+    if (!nestsWithinServiceDepth('result' in message ? message.result : message.error)) {
+      this.#log.warn(
+        '{service} {upstream} for {grant} answered with a value nested too deeply, so the Caller gets an error: id {id}',
+        { id: excerpt(JSON.stringify(id), CHILD_LOG_LIMIT) },
+      );
+      entry.session.deliver(errorResponse(entry.callerId, ERRORS.tooDeep), { activity: true });
+      return;
+    }
     entry.session.deliver({ ...message, id: entry.callerId }, { activity: true });
   }
 
@@ -531,13 +545,22 @@ export class GrantRelay {
     this.#log.info(
       '{service} {upstream} for {grant} asked for {method}, which Modgud does not offer.',
       {
-        method: excerpt(request.method, 200),
+        method: excerpt(request.method, METHOD_LOG_LIMIT),
       },
     );
     run.upstream.answer(errorResponse(request.id, ERRORS.methodNotFound));
   }
 
   #notification(message: JSONRPCNotification) {
+    if (!nestsWithinServiceDepth(message.params)) {
+      this.#log.warn(
+        '{service} {upstream} for {grant} dropped a notification nested too deeply: {method}',
+        {
+          method: excerpt(message.method, METHOD_LOG_LIMIT),
+        },
+      );
+      return;
+    }
     switch (message.method) {
       case 'notifications/progress': {
         const token = notificationParam(message, 'progressToken');
