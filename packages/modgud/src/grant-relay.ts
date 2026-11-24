@@ -33,6 +33,7 @@ import {
   stillMatches,
 } from './protocol.ts';
 import type { ChildInitializeResult, Given, ProgressToken } from './protocol.ts';
+import { RefusalEpisode } from './refusal-episode.ts';
 import { ToolCallLimit, toolCallRefusal } from './tool-call-limit.ts';
 import type { StopReason, Upstream, UpstreamFactory } from './upstream.ts';
 
@@ -121,7 +122,8 @@ export type GrantRelayOptions = {
   log: Log;
   // The Service's max_tool_calls_per_minute (ADR-0006).
   maxToolCallsPerMinute: number;
-  // The clock of the Grant's tool call window; tests move it.
+  // The clock of the Grant's tool call window and of both limits' refusal
+  // episodes; tests move it.
   now?: () => number;
   service: string;
   // Creates the Upstream for each run.
@@ -136,6 +138,8 @@ export class GrantRelay {
   readonly #limits: GrantLimits;
   readonly #backoff: Backoff;
   readonly #toolCalls: ToolCallLimit;
+  // The episodes of refusals at the request limit (ADR-0002).
+  readonly #requestRefusals: RefusalEpisode;
   // Every Session of the Grant, those still opening included.
   readonly #sessions = new Set<GrantSession>();
   // Callers of `ready`, waiting for the Service to start.
@@ -167,10 +171,23 @@ export class GrantRelay {
       maxMs: options.limits.backoffMaxMs,
       now: () => performance.now(),
     });
+    const now = options.now ?? (() => performance.now());
     this.#toolCalls = new ToolCallLimit({
       limit: options.maxToolCallsPerMinute,
       log: options.log,
-      now: options.now ?? (() => performance.now()),
+      now,
+    });
+    this.#requestRefusals = new RefusalEpisode({
+      now,
+      onEnd: (refused) =>
+        options.log.info(
+          '{service} {upstream} for {grant} ended a request limit episode, refusing requests: {refused}.',
+          { refused },
+        ),
+      onStart: () =>
+        options.log.warn('{service} {upstream} for {grant} refused a request: {limit} are open.', {
+          limit: options.limits.requestsPerGrant,
+        }),
     });
   }
 
@@ -229,12 +246,11 @@ export class GrantRelay {
       this.#waiting.length + this.#inFlight.size + this.#held.size >=
       this.#limits.requestsPerGrant
     ) {
-      this.#log.warn('{service} {upstream} for {grant} refused a request: {limit} are open.', {
-        limit: this.#limits.requestsPerGrant,
-      });
+      this.#requestRefusals.refused();
       session.deliver(errorResponse(message.id, ERRORS.tooManyRequests), { activity: true });
       return;
     }
+    this.#requestRefusals.admitted();
     const run = this.#run;
     if (run?.result !== undefined && !run.stopping) {
       this.#send(run, session, message);
@@ -293,6 +309,7 @@ export class GrantRelay {
     if (this.#ended === undefined) {
       this.#ended = kind;
       this.#toolCalls.endEpisode();
+      this.#requestRefusals.end();
       for (const session of this.#sessions) {
         session.end(kind === 'shutdown' ? 'shutdown' : 'authorization ended');
       }

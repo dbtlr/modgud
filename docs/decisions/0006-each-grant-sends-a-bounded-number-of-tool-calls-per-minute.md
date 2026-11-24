@@ -4,7 +4,7 @@ title: ADR-0006 - Each Grant sends a bounded number of tool calls per minute, an
 description: "Modgud rate-limits the tools/call requests it sends to a Service, per Grant, for every Service: at most a Service's max_tool_calls_per_minute (120 by default) in any 60 seconds. A call past the limit is not sent; it gets a tool result with isError true whose fixed text says how many seconds to wait. In Phase 2 a Grant may override its Service's limit."
 status: proposed
 created: 2026-11-20
-modified: 2026-11-20
+modified: 2026-11-24
 ---
 
 # Each Grant sends a bounded number of tool calls per minute, and a refused call gets a tool error the model can read
@@ -54,3 +54,4 @@ The limit bounds tool calls per Grant, not across Grants: a Service behind many 
 ## Changelog
 
 - 2026-11-20: Proposed. It becomes accepted once the limit is implemented and the refusal is checked against claude.ai and ChatGPT on the deployed path.
+- 2026-11-24: Addendum. ADR-0002's request limit, which logged every refusal when this decision was written, now logs its refusals as episodes through the same mechanism as this limit.
