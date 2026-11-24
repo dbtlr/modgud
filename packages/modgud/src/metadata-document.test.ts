@@ -246,9 +246,9 @@ describe('fetching a client metadata document', () => {
     expect(await fetchDocument(CLIENT_ID)).toBeUndefined();
   });
 
-  test('a failure rejects without saying why to the caller, and logs the host', async () => {
+  test('a fetch failure logs the host and escaped reason and returns no document', async () => {
     const { fetchDocument, entries } = setUp({
-      connect: async () => Promise.reject(new Error('ECONNREFUSED')),
+      connect: async () => Promise.reject(new Error('ECONNREFUSED\n\u001b[31m\u0000')),
     });
 
     expect(await fetchDocument(CLIENT_ID)).toBeUndefined();
@@ -256,7 +256,10 @@ describe('fetching a client metadata document', () => {
     expect(entries[0]?.message).toBe(
       'Could not use the client metadata document of {client}: {error}.',
     );
-    expect(entries[0]?.fields.client).toBe('chatgpt.com');
+    expect(entries[0]?.fields).toEqual({
+      client: 'chatgpt.com',
+      error: String.raw`Error: ECONNREFUSED\u000a\u001b[31m\u0000`,
+    });
   });
 
   test('fetches at most 30 times in any minute, across all clients', async () => {

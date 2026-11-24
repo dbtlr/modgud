@@ -10,6 +10,7 @@ import {
   createHarness,
   DAY,
   firstText,
+  initializeBodyFor,
   isAlive,
   openRawSession,
   post,
@@ -52,12 +53,13 @@ const sessionOpened = (
   caller: string,
   origin: string,
   credential?: { authorization: string; client: string },
+  protocol = '2025-11-25',
 ) => ({
   fields: {
     ...credential,
     caller,
     origin,
-    protocol: '2025-11-25',
+    protocol,
     service: 'stub',
     session: expect.stringMatching(/^[0-9a-f]{8}$/u),
   },
@@ -220,14 +222,53 @@ describe('a Caller with the harness token', () => {
 });
 
 describe('logging', () => {
-  test('a Child response id with a newline is logged escaped', async () => {
+  test('logs the SDK validation error for an invalid Caller message with escaped newlines', async () => {
+    const { entries, url } = await start();
+    const { headers } = await openRawSession(url);
+
+    const response = await post(url, headers, '{"jsonrpc":"2.0","id":1,"method":5}');
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: -32700, message: 'Parse error: Invalid JSON-RPC message' },
+    });
+    const errors = entriesOf(entries, '{service} session {session} HTTP transport error: {error}');
+    expect(errors).toHaveLength(1);
+    const error = errors[0]?.fields.error;
+    expect(error).toContain(String.raw`[\u000a`);
+    expect(error).toContain('"method"');
+    expect(error).not.toContain('\n');
+  });
+
+  test('logs the SDK validation error for an unreadable Child message with escaped newlines', async () => {
+    const { entries, url } = await start({ stubEnv: { STUB_MODE: 'raw-unreadable' } });
+    await openRawSession(url);
+
+    const errors = entriesOf(
+      entries,
+      '{service} {upstream} for {grant} unreadable message: {error}',
+    );
+    expect(errors).toHaveLength(1);
+    const error = errors[0]?.fields.error;
+    expect(error).toContain(String.raw`[\u000a`);
+    expect(error).toContain('"method"');
+    expect(error).not.toContain('\n');
+  });
+
+  test('logs an unmatched Child response ID escaped and cut to 2000 code points', async () => {
     const { entries, url } = await start();
     const { client } = await connect(url);
 
-    await client.callTool({ arguments: {}, name: 'unmatched-response' });
+    const id = `forged\n\u001b[31m\u0085${'😀'.repeat(2100)}`;
+    await client.callTool({ arguments: { id }, name: 'unmatched-response' });
 
-    await waitFor(() => entries.some((entry) => String(entry.fields.id).includes('forged')));
-    expect(entries.filter((entry) => String(entry.fields.id).includes('\n'))).toEqual([]);
+    const unmatched = entriesOf(
+      entries,
+      '{service} {upstream} for {grant} sent a response to no open request: id {id}',
+    );
+    expect(unmatched.map((entry) => entry.fields.id)).toEqual([
+      String.raw`"forged\n\u001b[31m\u0085${'😀'.repeat(1980)}`,
+    ]);
   });
 });
 
@@ -341,6 +382,17 @@ describe('ending a Session', () => {
     expect(listener.sessionCount()).toBe(0);
     expect(stoppedFor(entries, 'initialize timed out')).toBe(true);
     await waitFor(async () => (await processesWith(marker)).length === 0);
+  });
+
+  test('logs the escaped command name when a Child cannot start', async () => {
+    const { entries, url } = await start({ command: '/nonexistent/modgud-test\n\u001b[31m' });
+
+    const response = await post(url, { Authorization: `Bearer ${TOKEN}` });
+
+    expect(response.status).toBe(502);
+    const errors = entriesOf(entries, '{service} {upstream} for {grant} could not start: {error}');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.fields.error).toContain(String.raw`/nonexistent/modgud-test\u000a\u001b[31m`);
   });
 
   test('a Child message over the size limit stops the Child and fails the call, and the Session survives', async () => {
@@ -514,6 +566,7 @@ describe('an HTTP Service, through its Link', () => {
   });
 
   test('a Service that pings and logs before it answers initialize still starts, and its ping is answered', async () => {
+    const text = `warming up\n\u0085${'x'.repeat(2100)}`;
     const { entries, stub, url } = await startLinked({
       bearer: LINK_SECRET,
       stub: {
@@ -524,7 +577,7 @@ describe('an HTTP Service, through its Link', () => {
                 httpEvent({
                   jsonrpc: '2.0',
                   method: 'notifications/message',
-                  params: { data: 'warming up', level: 'info' },
+                  params: { data: text, level: 'info' },
                 }),
                 httpEvent(
                   rpcResult(httpId(request), {
@@ -546,9 +599,11 @@ describe('an HTTP Service, through its Link', () => {
             JSON.stringify(request.message) === JSON.stringify(rpcResult('service-ping')),
         ),
       );
-      expect(
-        entries.some((entry) => String(entry.fields.rpc).includes('notifications/message')),
-      ).toBe(true);
+      const notices = entriesOf(entries, '{service} {upstream} for {grant} notification: {rpc}');
+      const prefix = String.raw`{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"warming up\n`;
+      expect(notices.map(({ fields }) => ({ rpc: fields.rpc, upstream: fields.upstream }))).toEqual(
+        [{ rpc: String.raw`${prefix}\u0085${'x'.repeat(1999 - prefix.length)}`, upstream: 'link' }],
+      );
     } finally {
       await stub.server.stop(true);
     }
@@ -794,6 +849,30 @@ describe('refusals', () => {
   });
 });
 
+test('caps the accepted Origin and escapes and caps the requested protocol on Session open', async () => {
+  const label = `${'a'.repeat(50)}.`;
+  const origin = `https://${label.repeat(4)}test`;
+  const protocol = `future\n\u0000${'😀'.repeat(80)}`;
+  const { entries, url } = await start({ origins: [origin] });
+
+  const opened = await post(
+    url,
+    { Authorization: `Bearer ${TOKEN}`, Origin: origin },
+    initializeBodyFor(protocol),
+  );
+
+  expect(opened.status).toBe(200);
+  await opened.text();
+  expect(entries.filter((entry) => entry.message.includes(' opened for '))).toEqual([
+    sessionOpened(
+      'the static bearer token',
+      `https://${label.repeat(3)}${'a'.repeat(39)}`,
+      undefined,
+      String.raw`future\u000a\u0000${'😀'.repeat(56)}`,
+    ),
+  ]);
+});
+
 describe('a Caller with an OAuth access token', () => {
   test('lists and calls the Service tools, and its responses are not stored', async () => {
     const { store, url } = await start();
@@ -988,6 +1067,34 @@ describe('ending the Sessions of an authorization', () => {
 });
 
 describe('store maintenance', () => {
+  test('escapes a store cleanup failure before logging it and retries on the next tick', async () => {
+    let cleanups = 0;
+    const { entries } = await start({
+      storeCleanupMs: 10,
+      wrapStore: (store) => ({
+        ...store,
+        removeExpired: () => {
+          cleanups += 1;
+          if (cleanups === 1) {
+            throw new Error('database\n\u001b[31m is locked');
+          }
+        },
+      }),
+    });
+
+    await waitFor(() => cleanups >= 2);
+    expect(entriesOf(entries, 'Could not {task}: {error}')).toEqual([
+      {
+        fields: {
+          error: String.raw`Error: database\u000a\u001b[31m is locked`,
+          task: 'delete expired rows from the store',
+        },
+        level: 'warn',
+        message: 'Could not {task}: {error}',
+      },
+    ]);
+  });
+
   test('deletes expired rows on its interval, and stops once the listener closes', async () => {
     let cleanups = 0;
     const { listener } = await start({

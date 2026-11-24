@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -259,8 +259,9 @@ describe('routing', () => {
 
 describe('dynamic client registration', () => {
   test('registers a client and answers 201 with its public metadata', async () => {
+    const name = 'Claude\n\u0000\u001b[31m';
     const response = await register({
-      client_name: 'Claude',
+      client_name: name,
       client_secret: 'not-echoed',
       logo_uri: 'https://claude.ai/logo.png',
       redirect_uris: [REDIRECT],
@@ -274,7 +275,7 @@ describe('dynamic client registration', () => {
     expect(body).toEqual({
       client_id: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
       client_id_issued_at: START / 1000,
-      client_name: 'Claude',
+      client_name: name,
       grant_types: ['authorization_code', 'refresh_token'],
       redirect_uris: [REDIRECT],
       response_types: ['code'],
@@ -284,7 +285,10 @@ describe('dynamic client registration', () => {
     expect(store.findClient(clientId)?.redirectUris).toEqual([REDIRECT]);
     expect(entries).toEqual([
       {
-        fields: { client: clientId.slice(0, 8), clientName: 'Claude' },
+        fields: {
+          client: clientId.slice(0, 8),
+          clientName: String.raw`Claude\u000a\u0000\u001b[31m`,
+        },
         level: 'info',
         message: 'Registered client {client}.',
       },
@@ -693,6 +697,35 @@ describe('the token endpoint, authorization_code grant', () => {
     expect(logged[0]?.fields.credential).toBe('authorization code');
     expect(everything(entries)).not.toContain(authorizationId);
     expect(everything(entries)).not.toContain(code);
+  });
+
+  test('escapes the client prefix when issuing tokens or revoking an authorization after replay', async () => {
+    const clientId = 'old\napp-opaque-client-id';
+    const client = String.raw`old\u000aapp-`;
+    // Simulate a stored registration with an opaque ID the current generator never emits.
+    const lookup = spyOn(store, 'findClient').mockReturnValue({
+      clientId,
+      clientIdIssuedAt: START / 1000,
+      redirectUris: [REDIRECT],
+    });
+    try {
+      const { authorizationId, code } = approve(clientId);
+
+      expect((await exchange(clientId, code)).status).toBe(200);
+      expect(await errorOf(await exchange(clientId, code))).toBe('invalid_grant');
+      expect(entries).toMatchObject([
+        {
+          fields: { authorization: authorizationId.slice(0, 8), client },
+          level: 'info',
+        },
+        {
+          fields: { authorization: authorizationId.slice(0, 8), client },
+          level: 'warn',
+        },
+      ]);
+    } finally {
+      lookup.mockRestore();
+    }
   });
 });
 

@@ -3,7 +3,8 @@ import { expect, test } from 'bun:test';
 import type { GrantRelay } from './grant-relay.ts';
 import { initializeAnswer } from './protocol.ts';
 import { Session } from './session.ts';
-import { createLogRecorder } from './testing/log-recorder.ts';
+import { waitFor } from './testing/listener-harness.ts';
+import { createLogRecorder, entriesOf } from './testing/log-recorder.ts';
 import type { LogEntry } from './testing/log-recorder.ts';
 
 const URL_ = 'http://127.0.0.1/stub/mcp';
@@ -80,6 +81,22 @@ const overflowed = (entries: LogEntry[]) =>
       entry.message ===
       '{service} session {session} ended a stream its Caller stopped reading, with more than {limitMiB} MiB unsent.',
   );
+
+test('escapes the request ID in the error when a Session drops a response with no stream', async () => {
+  const { entries, session } = await openSession();
+  const dropped = () =>
+    entriesOf(entries, '{service} session {session} dropped a message: {error}');
+  try {
+    session.deliver({ id: 'absent\n\u001b[31m', jsonrpc: '2.0', result: {} }, { activity: false });
+
+    await waitFor(() => dropped().length > 0);
+    expect(dropped().map((entry) => entry.fields.error)).toEqual([
+      String.raw`Error: No connection established for request ID: absent\u000a\u001b[31m`,
+    ]);
+  } finally {
+    session.end('deleted');
+  }
+});
 
 test('a GET stream holding more than 1 MiB unread ends on the next message, and the Session stays open', async () => {
   const { entries, session } = await openSession();

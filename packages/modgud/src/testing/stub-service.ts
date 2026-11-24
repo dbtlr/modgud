@@ -14,11 +14,13 @@
 //   them that many levels deep), `STUB_SERVER_INFO_DEPTH` likewise for
 //   `serverInfo`, `ping` and `tools/list` as an empty server would, and every
 //   other request with an error. With `STUB_NOTIFY_DEPTH` its `tools/list`
-//   first sends a notification nested that many levels deep. Its `tools/call`
-//   answers with a result whose `x` nests `STUB_RESULT_DEPTH` levels deep, so
-//   the result nests one level more (`x` is an empty object when unset), after
-//   a `notifications/progress` for the call's progress token whose params' `x`
+//   first sends a notification nested that many levels deep, using
+//   `STUB_NOTIFY_METHOD` when set. Its `tools/call` answers with a result
+//   whose `x` nests `STUB_RESULT_DEPTH` levels deep, so the result nests one
+//   level more (`x` is an empty object when unset), after a
+//   `notifications/progress` for the call's progress token whose params' `x`
 //   nests `STUB_PROGRESS_DEPTH` levels deep when that is set.
+// - `raw-unreadable`: writes an invalid JSON-RPC message, then runs in `raw` mode.
 //
 // `STUB_MODE` may list several modes, separated by commas, with
 // `STUB_COUNTER` naming a file that counts starts: the nth start runs the nth
@@ -123,8 +125,11 @@ const answerRaw = (message: Record<string, unknown>) => {
   } else if (method === 'tools/list') {
     const notification = nestedFromEnvironment('STUB_NOTIFY_DEPTH');
     if (notification !== undefined) {
+      const notificationMethod = JSON.stringify(
+        process.env.STUB_NOTIFY_METHOD ?? 'notifications/odd',
+      );
       process.stdout.write(
-        `{"jsonrpc":"2.0","method":"notifications/odd","params":{"x":${notification}}}\n`,
+        `{"jsonrpc":"2.0","method":${notificationMethod},"params":{"x":${notification}}}\n`,
       );
     }
     write({ id, jsonrpc: '2.0', result: { tools: [] } });
@@ -345,10 +350,11 @@ server.registerTool('oversized', { description: 'Return an 11 MiB result.' }, ()
 
 server.registerTool(
   'unmatched-response',
-  { description: 'Write a response to a request no Caller sent, then answer.' },
-  () => {
-    // An id with a newline, which must not start a second log line.
-    const id = 'forged\n2026-01-01T00:00:00.000Z warn forged line';
+  {
+    description: 'Write a response to a request no Caller sent, then answer.',
+    inputSchema: z.object({ id: z.string() }),
+  },
+  ({ id }) => {
     write({ id, jsonrpc: '2.0', result: {} });
     return text('sent');
   },
@@ -400,7 +406,10 @@ if (mode === 'ignore-sigterm') {
 }
 if (mode === 'mute') {
   await readLines(() => undefined);
-} else if (mode === 'raw') {
+} else if (mode === 'raw' || mode === 'raw-unreadable') {
+  if (mode === 'raw-unreadable') {
+    write({ jsonrpc: '2.0', method: 5 });
+  }
   await readLines(answerRaw);
 } else {
   await serve();
