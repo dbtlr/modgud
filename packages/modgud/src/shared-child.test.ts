@@ -22,6 +22,7 @@ import {
 } from './testing/listener-harness.ts';
 import { entriesOf, sessionsEnded, stderrOf, stoppedFor } from './testing/log-recorder.ts';
 import type { LogEntry } from './testing/log-recorder.ts';
+import { nestedJson } from './testing/nested-json.ts';
 
 const harness = createHarness();
 const { start } = harness;
@@ -722,7 +723,7 @@ describe('a Child whose initialize result nests too deeply', () => {
   );
 });
 
-describe('a running Child that sends a notification nested too deeply to log', () => {
+describe('a running Child that sends a notification nested too deeply', () => {
   test('still answers the request that follows, with no unhandled rejection', async () => {
     const unhandled: unknown[] = [];
     const record = (reason: unknown) => unhandled.push(reason);
@@ -739,11 +740,87 @@ describe('a running Child that sends a notification nested too deeply to log', (
 
       expect(first.messages).toEqual([{ id: 1, jsonrpc: '2.0', result: { tools: [] } }]);
       expect(second.messages).toEqual([{ id: 2, jsonrpc: '2.0', result: {} }]);
-      expect(entries.some((entry) => entry.fields.rpc === '(nested too deeply to log)')).toBe(true);
+      expect(
+        entriesOf(
+          entries,
+          '{service} {upstream} for {grant} dropped a notification nested too deeply: {method}',
+        ),
+      ).toHaveLength(1);
       expect(unhandled).toEqual([]);
     } finally {
       process.off('unhandledRejection', record);
     }
+  });
+});
+
+const tooDeep = { code: -32_603, message: 'The Service answered with a value nested too deeply' };
+
+// A `tools/call` that carries a progress token, to a raw-mode stub.
+const progressCall = (id: number) => ({
+  id,
+  method: 'tools/call',
+  params: { _meta: { progressToken: 'p' }, arguments: {}, name: 'any' },
+});
+
+describe('a running Child that answers with a result nested too deeply to serialize', () => {
+  test('gives the Caller an error for that request and still answers the next', async () => {
+    const { entries, url } = await start({
+      stubEnv: { STUB_MODE: 'raw', STUB_RESULT_DEPTH: '100000' },
+    });
+    const { headers } = await openRawSession(url);
+
+    const deep = await requestOn(url, headers, progressCall(1));
+    const next = await requestOn(url, headers, { id: 2, method: 'ping' });
+
+    expect(deep.messages).toEqual([{ error: tooDeep, id: 1, jsonrpc: '2.0' }]);
+    expect(next.messages).toEqual([{ id: 2, jsonrpc: '2.0', result: {} }]);
+    expect(
+      entriesOf(
+        entries,
+        '{service} {upstream} for {grant} answered with a value nested too deeply, so the Caller gets an error: id {id}',
+      ),
+    ).toHaveLength(1);
+  });
+
+  test('delivers a result nested within the limit unchanged', async () => {
+    const { url } = await start({ stubEnv: { STUB_MODE: 'raw', STUB_RESULT_DEPTH: '63' } });
+    const { headers } = await openRawSession(url);
+
+    const { messages } = await requestOn(url, headers, progressCall(1));
+
+    expect(messages).toHaveLength(1);
+    const [answer] = messages;
+    expect(answer).toMatchObject({ id: 1, jsonrpc: '2.0' });
+    expect(answer).not.toHaveProperty('error');
+    expect(JSON.stringify(answer?.result)).toBe(`{"x":${nestedJson(63)}}`);
+  });
+
+  test('refuses a result one level past the limit', async () => {
+    const { url } = await start({ stubEnv: { STUB_MODE: 'raw', STUB_RESULT_DEPTH: '64' } });
+    const { headers } = await openRawSession(url);
+
+    const { messages } = await requestOn(url, headers, progressCall(1));
+
+    expect(messages).toEqual([{ error: tooDeep, id: 1, jsonrpc: '2.0' }]);
+  });
+});
+
+describe('a running Child that sends a progress notification nested too deeply to serialize', () => {
+  test('drops the notification and delivers the result', async () => {
+    const { entries, url } = await start({
+      stubEnv: { STUB_MODE: 'raw', STUB_PROGRESS_DEPTH: '100000' },
+    });
+    const { headers } = await openRawSession(url);
+
+    const { messages } = await requestOn(url, headers, progressCall(1));
+
+    expect(messages).toEqual([{ id: 1, jsonrpc: '2.0', result: { x: {} } }]);
+    expect(
+      entriesOf(
+        entries,
+        '{service} {upstream} for {grant} dropped a notification nested too deeply: {method}',
+      ),
+    ).toHaveLength(1);
   });
 });
 
