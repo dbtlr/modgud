@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import type { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -19,8 +19,6 @@ const directory = await mkdtemp(join(tmpdir(), 'modgud-serve-'));
 afterAll(async () => {
   await rm(directory, { force: true, recursive: true });
 });
-
-const plainEnvironment = appEnvironment(directory);
 
 // Reads lines until one matches, returning that line.
 const readUntil = async (lines: AsyncIterator<string>, pattern: RegExp) => {
@@ -140,6 +138,25 @@ const startServe = async (configPath: string) => {
   return { admin, base, child, lines, printed };
 };
 
+const runFailedServe = async (configPath: string, failBindHost?: string) => {
+  const scratch = await mkdtemp(join(directory, 'failed-serve-'));
+  const environment = appEnvironment(scratch);
+  const entrypoint =
+    failBindHost === undefined ? 'main.ts' : 'testing/serve-with-loopback-admin.ts';
+  const child = Bun.spawn(
+    [process.execPath, `${import.meta.dir}/${entrypoint}`, 'serve', '--config', configPath],
+    {
+      env: { ...environment, MODGUD_TEST_FAIL_BIND_HOST: failBindHost },
+      stderr: 'pipe',
+      stdout: 'pipe',
+      timeout: 4000,
+    },
+  );
+  const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+  expect(exitCode).toBe(1);
+  return { lines: logRecordsOf(logPath(scratch), () => true), stderr };
+};
+
 test('serve answers MCP on the configured Service path and ends its Sessions on SIGTERM', async () => {
   const { configPath } = await writeServeConfig('modgud');
   const { base, child, lines, printed } = await startServe(configPath);
@@ -168,38 +185,68 @@ test('serve answers MCP on the configured Service path and ends its Sessions on 
   expect(await child.exited).toBe(143);
 });
 
-test('serve starts with the retired public.max_sessions set, and warns that it is ignored', async () => {
-  const { configPath } = await writeServeConfig('retired', 'max_sessions = 16');
+test('serve escapes the configuration path in both warnings about a retired setting', async () => {
+  const { configPath } = await writeServeConfig('retired\n\u001b[31m', 'max_sessions = 16');
+  const file = join(directory, String.raw`retired\u000a\u001b[31m.toml`);
+  const warning =
+    'public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is 64.';
   const { child, lines } = await startServe(configPath);
   try {
-    await readUntil(
-      lines,
-      /^warn In \{file\}: \{warning\} \{.*"warning":"public\.max_sessions is ignored: /u,
-    );
+    const record = await readUntil(lines, /^warn In \{file\}: \{warning\} /u);
+    expect(record).toBe(`warn In {file}: {warning} ${JSON.stringify({ file, warning })}`);
     child.kill('SIGTERM');
     await readUntil(lines, /^info Stopped\. \{\}$/u);
-    expect(await new Response(child.stderr).text()).toContain(
-      `In ${configPath}: public.max_sessions is ignored: Modgud now limits the Sessions of each Grant with public.max_sessions_per_grant, which is 64.`,
-    );
+    expect(await new Response(child.stderr).text()).toContain(`In ${file}: ${warning}`);
   } finally {
     child.kill('SIGTERM');
+    await child.exited;
   }
   expect(await child.exited).toBe(143);
 });
 
-test('serve refuses an invalid configuration, naming the file and the setting', async () => {
+test('serve escapes the store path in both warnings about the file mode', async () => {
+  const { configPath, storePath } = await writeServeConfig('wide\n\u001b[31m');
+  await writeFile(storePath, '');
+  await chmod(storePath, 0o644);
+  const file = join(directory, String.raw`wide\u000a\u001b[31m.sqlite`);
+  const { child, lines } = await startServe(configPath);
+  try {
+    const record = await readUntil(lines, /^warn Set \{file\} from mode \{mode\} to 0600\. /u);
+    expect(record).toBe(
+      `warn Set {file} from mode {mode} to 0600. ${JSON.stringify({ file, mode: '0644' })}`,
+    );
+    child.kill('SIGTERM');
+    await readUntil(lines, /^info Stopped\. \{\}$/u);
+    expect(await new Response(child.stderr).text()).toContain(
+      `Set ${file} from mode 0644 to 0600.`,
+    );
+  } finally {
+    child.kill('SIGTERM');
+    await child.exited;
+  }
+  expect(await child.exited).toBe(143);
+});
+
+test('serve refuses an invalid configuration and escapes its multiline diagnostic', async () => {
   const configPath = join(directory, 'invalid.toml');
   await writeFile(configPath, '[harness]\nbearer_token_sha256 = "plain"\n');
-  const child = Bun.spawn(
-    [process.execPath, `${import.meta.dir}/main.ts`, 'serve', '--config', configPath],
-    { env: plainEnvironment, stderr: 'pipe', stdout: 'pipe' },
-  );
+  const { lines, stderr } = await runFailedServe(configPath);
 
-  const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-
-  expect(exitCode).not.toBe(0);
   expect(stderr).toContain(configPath);
-  expect(stderr).toContain('harness.bearer_token_sha256');
+  const setting = /\\u000a  → at harness\.bearer_token_sha256/u;
+  expect(stderr).toMatch(setting);
+  expect(await readUntil(lines, /^error Invalid configuration in /u)).toMatch(setting);
+});
+
+test('serve escapes the store path when it refuses a symbolic link', async () => {
+  const { configPath, storePath } = await writeServeConfig('linked\n\u001b[31m');
+  await symlink(join(directory, 'absent.sqlite'), storePath);
+  const { lines, stderr } = await runFailedServe(configPath);
+
+  const file = join(directory, String.raw`linked\u000a\u001b[31m.sqlite`);
+  const message = `Could not open the store: The store ${file} is a symbolic link.`;
+  expect(stderr).toContain(message);
+  expect(await readUntil(lines, /^error Could not open the store: /u)).toContain(message);
 });
 
 test('serve opens the configured store and serves the OAuth endpoints and access tokens', async () => {
@@ -351,22 +398,28 @@ test('serve refuses to start when the Admin listener cannot listen, naming its a
   const { configPath } = await writeServeConfig('unbound');
   const text = await Bun.file(configPath).text();
   await writeFile(configPath, text.replace('host = "100.64.0.1"', 'host = "100.127.255.254"'));
-  const child = Bun.spawn(
-    [process.execPath, `${import.meta.dir}/main.ts`, 'serve', '--config', configPath],
-    { env: plainEnvironment, stderr: 'pipe', stdout: 'pipe' },
-  );
+  const { stderr } = await runFailedServe(configPath);
 
-  const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-
-  expect(exitCode).not.toBe(0);
   expect(stderr).toContain('Could not listen on 100.127.255.254:0');
+});
+
+test.each([
+  ['Public', '127.0.0.1'],
+  ['Admin', '100.64.0.1'],
+])('serve escapes the diagnostic when the %s listener cannot bind', async (_listener, hostname) => {
+  const { configPath } = await writeServeConfig(`bind-failure-${hostname}`);
+  const { lines, stderr } = await runFailedServe(configPath, hostname);
+
+  const message = `Could not listen on ${hostname}:0: ${String.raw`bind failed\u000a\u001b[31m`}`;
+  expect(stderr).toContain(message);
+  expect(await readUntil(lines, /^error Could not listen on /u)).toContain(message);
 });
 
 test('a listener answers an error that escapes its handler with a plain HTTP 500, not Bun’s error page', async () => {
   const { entries, log } = createLogRecorder();
   const server = listen(
     {
-      fetch: () => Promise.reject(new Error('store exploded at /secret/path')),
+      fetch: () => Promise.reject(new Error('store exploded\nat /secret/\u001b[31mpath')),
       host: '127.0.0.1',
       idleTimeout: 5,
       log,
@@ -383,7 +436,7 @@ test('a listener answers an error that escapes its handler with a plain HTTP 500
     expect(await response.text()).toBe('Internal Server Error');
     expect(entries).toEqual([
       {
-        fields: { error: 'store exploded at /secret/path' },
+        fields: { error: String.raw`store exploded\u000aat /secret/\u001b[31mpath` },
         level: 'warn',
         message: 'Answered a request with HTTP 500: {error}',
       },

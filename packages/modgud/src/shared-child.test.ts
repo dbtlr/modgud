@@ -17,6 +17,7 @@ import {
   rejectionOf,
   processesWith,
   requestOn,
+  TOKEN,
   toolCall,
   waitFor,
 } from './testing/listener-harness.ts';
@@ -221,17 +222,37 @@ describe('eviction', () => {
     expect((await requestOn(url, third.headers, { id: 4, method: 'tools/list' })).status).toBe(200);
   });
 
-  test('an initialize gets 503 only when every Session of the Grant is still opening', async () => {
-    const { entries, listener, url } = await start({
+  test('logs the OAuth Caller when its Grant has no room for another opening Session', async () => {
+    const { entries, listener, store, url } = await start({
       maxSessionsPerGrant: 1,
       stubEnv: { STUB_MODE: 'mute' },
     });
-    const opening = post(url, { Authorization: 'Bearer harness-token' });
+    // The store accepts opaque client IDs. Include a newline inside the logged prefix.
+    const { accessToken, authorizationId } = connectOAuthClient(store, 'old\napp-opaque-client-id');
+    const auth = { Authorization: `Bearer ${accessToken}` };
+    const client = String.raw`old\u000aapp-`;
+    const opening = post(url, auth);
     await waitFor(() => childStarts(entries).length === 1);
 
-    const refused = await post(url, { Authorization: 'Bearer harness-token' });
+    const refused = await post(url, auth);
 
     expect(refused.status).toBe(503);
+    expect(refused.headers.get('retry-after')).toBe('30');
+    const template = 'Refused a {service} session for {caller}: {limit} are opening.';
+    const prefix = authorizationId.slice(0, 8);
+    expect(entriesOf(entries, template)).toEqual([
+      {
+        fields: {
+          authorization: prefix,
+          caller: `client ${client} authorization ${prefix}`,
+          client,
+          limit: 1,
+          service: 'stub',
+        },
+        level: 'warn',
+        message: template,
+      },
+    ]);
     await listener.close();
     expect((await opening).status).toBe(503);
   });
@@ -515,7 +536,24 @@ describe('Child messages', () => {
     });
   });
 
-  test("a Child's logging notification goes to the log and not to the Caller", async () => {
+  test('escapes and caps the method of a request the Child cannot make', async () => {
+    const { entries, url } = await start();
+    const { client } = await connect(url);
+    const method = `custom\n\u001b[31m${'😀'.repeat(210)}`;
+
+    const answer = await client.callTool({ arguments: { method }, name: 'child-request' });
+
+    expect(JSON.parse(firstText(answer) ?? '')).toMatchObject({ error: methodNotFound });
+    const logged = entriesOf(
+      entries,
+      '{service} {upstream} for {grant} asked for {method}, which Modgud does not offer.',
+    );
+    expect(logged.map((entry) => entry.fields.method)).toEqual([
+      String.raw`custom\u000a\u001b[31m${'😀'.repeat(188)}`,
+    ]);
+  });
+
+  test("escapes and caps a Child's logging notification without delivering it to the Caller", async () => {
     const { entries, url } = await start();
     const { client } = await connect(url);
     const notified: unknown[] = [];
@@ -523,13 +561,15 @@ describe('Child messages', () => {
       notified.push(notification);
     });
 
-    await client.callTool({ arguments: { text: 'for the log\n' }, name: 'log' });
+    const text = `for the log\n\u0085${'😀'.repeat(2100)}`;
+    await client.callTool({ arguments: { text }, name: 'log' });
 
-    await waitFor(() => entries.some((entry) => String(entry.fields.rpc).includes('for the log')));
+    const prefix = String.raw`{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"for the log\n`;
+    // The C1 control takes one code point before escaping.
     expect(entries).toContainEqual({
       fields: {
         grant: 'static-token',
-        rpc: String.raw`{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"for the log\n","level":"info"}}`,
+        rpc: String.raw`${prefix}\u0085${'😀'.repeat(1999 - prefix.length)}`,
         service: 'stub',
         upstream: 'child',
       },
@@ -683,6 +723,24 @@ describe('the request limit', () => {
 });
 
 describe('the version gate', () => {
+  test('escapes and caps the payload logged for an unsupported Child initialize result', async () => {
+    const { entries, url } = await start({
+      stubEnv: { STUB_MODE: 'raw', STUB_VERSION: `invalid\n\u0085${'😀'.repeat(2100)}` },
+    });
+
+    const failed = await post(url, { Authorization: `Bearer ${TOKEN}` });
+
+    expect(failed.status).toBe(502);
+    const logged = entriesOf(
+      entries,
+      '{service} {upstream} for {grant} answered initialize with {rpc}',
+    );
+    const prefix = String.raw`{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}},"protocolVersion":"invalid\n`;
+    expect(logged.map((entry) => entry.fields.rpc)).toEqual([
+      String.raw`${prefix}\u0085${'😀'.repeat(1999 - prefix.length)}`,
+    ]);
+  });
+
   test('a Child that answers with an unsupported protocol version is stopped and counts as a failure', async () => {
     const { entries, url } = await start({
       stubEnv: { STUB_MODE: 'raw', STUB_VERSION: '2024-11-05' },
@@ -751,6 +809,25 @@ describe('a running Child that sends a notification nested too deeply', () => {
       process.off('unhandledRejection', record);
     }
   });
+
+  test('escapes and caps the method of a dropped over-deep notification', async () => {
+    const method = `notifications/custom\n\u001b[31m${'😀'.repeat(210)}`;
+    const { entries, url } = await start({
+      stubEnv: { STUB_MODE: 'raw', STUB_NOTIFY_DEPTH: '65', STUB_NOTIFY_METHOD: method },
+    });
+    const { headers } = await openRawSession(url);
+
+    const { messages } = await requestOn(url, headers, { id: 1, method: 'tools/list' });
+
+    expect(messages).toEqual([{ id: 1, jsonrpc: '2.0', result: { tools: [] } }]);
+    const dropped = entriesOf(
+      entries,
+      '{service} {upstream} for {grant} dropped a notification nested too deeply: {method}',
+    );
+    expect(dropped.map((entry) => entry.fields.method)).toEqual([
+      String.raw`notifications/custom\u000a\u001b[31m${'😀'.repeat(174)}`,
+    ]);
+  });
 });
 
 const tooDeep = { code: -32_603, message: 'The Service answered with a value nested too deeply' };
@@ -765,7 +842,7 @@ const progressCall = (id: number) => ({
 describe('a running Child that answers with a result nested too deeply to serialize', () => {
   test('gives the Caller an error for that request and still answers the next', async () => {
     const { entries, url } = await start({
-      stubEnv: { STUB_MODE: 'raw', STUB_RESULT_DEPTH: '100000' },
+      stubEnv: { STUB_MODE: 'raw', STUB_RESULT_DEPTH: '100000', STUB_TRACE: '1' },
     });
     const { headers } = await openRawSession(url);
 
@@ -774,12 +851,14 @@ describe('a running Child that answers with a result nested too deeply to serial
 
     expect(deep.messages).toEqual([{ error: tooDeep, id: 1, jsonrpc: '2.0' }]);
     expect(next.messages).toEqual([{ id: 2, jsonrpc: '2.0', result: {} }]);
-    expect(
-      entriesOf(
-        entries,
-        '{service} {upstream} for {grant} answered with a value nested too deeply, so the Caller gets an error: id {id}',
-      ),
-    ).toHaveLength(1);
+    // A matched reply uses Modgud's numeric ID, so the excerpt should be its decimal string.
+    const upstreamId = received(entries).find((message) => message.method === 'tools/call')?.id;
+    expect(typeof upstreamId).toBe('number');
+    const logged = entriesOf(
+      entries,
+      '{service} {upstream} for {grant} answered with a value nested too deeply, so the Caller gets an error: id {id}',
+    );
+    expect(logged.map((entry) => entry.fields.id)).toEqual([String(upstreamId)]);
   });
 
   test('delivers a result nested within the limit unchanged', async () => {

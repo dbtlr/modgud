@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -817,6 +817,38 @@ describe('an unexpected error', () => {
 });
 
 describe('logging', () => {
+  test('escapes the client prefix and name in Approval page events', async () => {
+    const clientId = 'old\napp-opaque-client-id';
+    const client = String.raw`old\u000aapp-`;
+    const lookup = spyOn(store, 'findClient').mockReturnValue({
+      clientId,
+      clientIdIssuedAt: clock / 1000,
+      clientName: 'Chat\u001b[31m\nApp',
+      redirectUris: [REDIRECT],
+    });
+    try {
+      const approval = await openApproval(authorizeQuery(clientId));
+      expect((await approveWith(approval, 'ZZZZ-ZZZZ')).status).toBe(400);
+      expect((await approveWith(approval, store.mintPairingCode(10).code)).status).toBe(303);
+      const denied = await openApproval(authorizeQuery(clientId));
+      expect(
+        (await post({ action: 'deny', request: denied.id }, { cookie: denied.cookie })).status,
+      ).toBe(303);
+
+      expect(entries.map((entry) => entry.fields)).toEqual([
+        { client, failures: 1, limit: 5 },
+        {
+          authorization: expect.stringMatching(/^[\w-]{8}$/u),
+          client,
+          clientName: String.raw`Chat\u001b[31m\u000aApp`,
+        },
+        { client },
+      ]);
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
   test('logs approvals, denials, and failed codes by short prefixes, never a code', async () => {
     const clientId = register();
     const failed = await openApproval(authorizeQuery(clientId));
