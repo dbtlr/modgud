@@ -2,10 +2,21 @@ import { isIPv6 } from 'node:net';
 
 import { ipv6Groups } from './ip-address.ts';
 
+// How many keys each `record` sweeps. It must be more than the one key a
+// `record` can add, so the sweep's walk through the map gains on the keys
+// added behind it and finishes each pass.
+const SWEEP_STEPS_PER_RECORD = 2;
+
 // A sliding-window count of events per key: at most `limit` in any
 // `windowMs`. Each key's times are kept oldest first and dropped from the
-// front as they leave the window, so a check costs the same at any limit, and
-// memory stays bounded by the events recorded within about two windows.
+// front as they leave the window, so a check costs the same at any limit.
+// A key checked again is dropped once all its times have left the window. Each
+// `record` also sweeps a few keys, walking the map in passes with one
+// iterator and dropping each key whose times have all left the window, so a
+// key never checked again goes too, with no timer. Only records drive the
+// sweep: a key that has left the window is dropped within about one pass,
+// (keys held / SWEEP_STEPS_PER_RECORD) records, and the keys held stay within
+// about twice the most recorded in one window.
 export const createWindowLimit = ({
   limit,
   now,
@@ -42,8 +53,40 @@ export const createWindowLimit = ({
     return entry;
   };
 
+  // The sweep's place in its pass through the map. One iterator serves a
+  // whole pass: a fresh one per step would walk past every deleted slot.
+  // A Map iterator stays valid as keys are deleted and reaches keys added
+  // behind it.
+  let sweepCursor = events.entries();
+
+  // Looks at the next key in the pass, starting a new pass at the end, and
+  // drops it when its newest time has left the window. This is what removes
+  // keys that are never checked again.
+  const sweepStep = (since: number) => {
+    let next = sweepCursor.next();
+    if (next.done === true) {
+      sweepCursor = events.entries();
+      next = sweepCursor.next();
+      if (next.done === true) {
+        return;
+      }
+    }
+    const [key, entry] = next.value;
+    if ((entry.times[entry.times.length - 1] ?? 0) <= since) {
+      events.delete(key);
+    }
+  };
+
+  const sweep = () => {
+    const since = now() - windowMs;
+    for (let step = 0; step < SWEEP_STEPS_PER_RECORD; step += 1) {
+      sweepStep(since);
+    }
+  };
+
   return {
     record: (key: string) => {
+      sweep();
       const entry = recent(key);
       const time = now();
       if (entry === undefined) {
@@ -59,6 +102,8 @@ export const createWindowLimit = ({
       }
       times.splice(at, 0, time);
     },
+    // The number of keys held, for tests to observe the sweep.
+    size: () => events.size,
     // Milliseconds until one more event under the key stays within the limit;
     // 0 when it does now.
     wait: (key: string) => {

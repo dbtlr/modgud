@@ -34,6 +34,87 @@ describe('a sliding-window limit', () => {
   });
 });
 
+describe('a sliding-window limit sweeping keys that are never checked again', () => {
+  test('drops one-off keys once they leave the window, without those keys being checked', () => {
+    const { clock, window } = limitAt(1);
+    for (let source = 0; source < 100; source += 1) {
+      window.record(`old-${source}`);
+    }
+    expect(window.size()).toBe(100);
+
+    clock.now = 1000;
+    for (let source = 0; source < 100; source += 1) {
+      window.record(`new-${source}`);
+    }
+
+    // Each record sweeps a few keys, so the 100 old ones are gone, while the
+    // 100 new ones are still in the window.
+    expect(window.size()).toBe(100);
+  });
+
+  test('keeps a key whose times are still inside the window, and still counts it', () => {
+    const { clock, window } = limitAt(2);
+    window.record('busy');
+    clock.now = 600;
+    window.record('busy');
+    for (let source = 0; source < 50; source += 1) {
+      window.record(`other-${source}`);
+    }
+
+    // Many sweeps over every key, with 'busy' having one time in the window.
+    clock.now = 1200;
+    for (let source = 0; source < 200; source += 1) {
+      window.record(`later-${source}`);
+    }
+
+    expect(window.wait('busy')).toBe(0);
+    window.record('busy');
+    expect(window.wait('busy')).toBe(400);
+  });
+
+  test('drops one-off keys behind a busy key that never leaves the window', () => {
+    const { clock, window } = limitAt(1);
+    // One new key every millisecond for 20 windows, and one key, recorded
+    // first, that stays in the window throughout.
+    for (let time = 0; time < 20_000; time += 1) {
+      clock.now = time;
+      if (time % 500 === 0) {
+        window.record('busy');
+      }
+      window.record(`once-${time}`);
+    }
+
+    // About 1000 keys are inside the window at the end. The sweep keeps the
+    // rest to within that many again, rather than holding all 20,000.
+    expect(window.size()).toBeLessThanOrEqual(2 * 1001);
+    expect(window.wait('busy')).toBeGreaterThan(0);
+  });
+
+  test('keeps a key swept 1 ms before its last time leaves the window', () => {
+    const { clock, window } = limitAt(1);
+    window.record('a');
+    clock.now = 999;
+    // This record sweeps 'a', whose time at 0 is still inside the window.
+    window.record('b');
+
+    expect(window.wait('a')).toBe(1);
+  });
+
+  test('does not drop a key whose out-of-order time is the only one still in the window', () => {
+    const { clock, window } = limitAt(1);
+    clock.now = 1000;
+    window.record('a');
+    clock.now = 500;
+    window.record('a');
+    clock.now = 1600;
+    for (let source = 0; source < 20; source += 1) {
+      window.record(`other-${source}`);
+    }
+
+    expect(window.wait('a')).toBe(400);
+  });
+});
+
 // The wait a plain list of every recorded time gives, for comparison.
 const referenceWait = (times: number[], limit: number, now: number, windowMs: number) => {
   const recent = times.filter((time) => time > now - windowMs);
